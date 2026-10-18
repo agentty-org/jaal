@@ -7,7 +7,8 @@ the OS waiting, on Linux, macOS and Windows. It doesn't draw anything: a
 renderer (a terminal UI, a GUI, a web socket) plugs in as a host.
 
 Status: core, kernel and platform layers are built and tested on all three
-platforms (Windows under wine).
+platforms (Windows natively via MSYS2 clang64; historically verified under
+wine).
 
 **Docs** live in [docs/](docs/):
 
@@ -300,14 +301,18 @@ It prints one line per preset and exits non-zero if any fails. About
 
 | | Linux | macOS | Windows |
 |---|---|---|---|
-| core, kernel | runs | runs | runs (wine) |
-| reactor | epoll + poll, run | kqueue + poll, run | wait_reactor, run under wine |
+| core, kernel | runs | runs | runs (native, clang64; also under wine) |
+| reactor | epoll + poll, run | kqueue + poll, run | wait_reactor, native + under wine |
+| process | posix_process (fork/exec) | posix_process | windows_process (CreateProcessW + job object, `adopt` for foreign children) |
 | signals | run | run (real SIGINT/TERM/HUP) | handler run directly; not yet via a real console |
 | sanitizers | asan, tsan | asan, tsan | — |
 
-Linux and macOS both run the whole suite on real hardware, under the debug,
-clang, asan, tsan and release presets. Windows has only run under wine;
-that's the open one.
+Linux and macOS run the whole suite on real hardware, under the debug,
+clang, asan, tsan and release presets. Windows builds natively with MSYS2
+clang64 and runs the core/kernel/reactor suite (maya + agentty execute
+their full suites against it); the wine matrix remains as the historical
+verification, and a native Windows preset for `scripts/check.sh` is the
+remaining gap.
 
 ## Using it from CMake
 

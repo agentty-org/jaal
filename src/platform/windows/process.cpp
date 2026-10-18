@@ -131,6 +131,24 @@ windows_process::~windows_process() {
     if (p_->job) ::TerminateJobObject(static_cast<HANDLE>(p_->job.get()), 1);
 }
 
+result<windows_process> windows_process::adopt(adopted_child a) {
+    if (!a.process || a.pid <= 0)
+        return std::unexpected(error::make(std::errc::invalid_argument,
+                                           "windows_process: adopt without process handle"));
+    windows_process self;
+    auto& s = *self.p_;
+    // TAKEN, not duplicated: the spawner created these handles for us and
+    // holds no copies (claybin's spawn returns ownership; the caller handed
+    // the pipe's read end over after closing its own write end). Closing them
+    // here on failure would double-close, so the move happens unconditionally
+    // and errors are reported before the move.
+    s.process = owned_handle{static_cast<HANDLE>(a.process)};
+    s.pid     = static_cast<DWORD>(a.pid);
+    if (a.stdout_pipe)
+        s.out_r = owned_handle{static_cast<HANDLE>(a.stdout_pipe)};
+    return self;
+}
+
 result<windows_process> windows_process::spawn(const process_spec& spec) {
     if (spec.argv.empty())
         return std::unexpected(error::make(std::errc::invalid_argument,

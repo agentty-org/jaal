@@ -56,7 +56,23 @@ class windows_process {
     /// Give the child EOF on stdin.
     void close_stdin() noexcept;
 
-    [[nodiscard]] result<void> stop(stop_mode mode, stop_scope scope);
+    /// A child SOMEONE ELSE created, for adopt() to take over. The sandbox
+    /// spawner (claybin's windows backend) runs CreateProcess itself -- the
+    /// token, job and mitigation attributes cannot be expressed as an argv
+    /// prefix -- so this is the windows mirror of posix_process::adopted_child:
+    /// what matters is that there is ONE way to WATCH a child, not one way to
+    /// create one.
+    struct adopted_child {
+        int pid = -1;
+        /// The child's PROCESS handle, already open -- the waitable exit.
+        /// Taken, not borrowed: the adopted process closes it on reap/destruct.
+        void* process = nullptr;
+        /// The read end of the stdout+stderr merge pipe. Taken likewise.
+        void* stdout_pipe = nullptr;
+    };
+    [[nodiscard]] static result<windows_process> adopt(adopted_child);
+
+    [[nodiscard]] result<void> stop(stop_mode, stop_scope);
     [[nodiscard]] result<exit_status> reap();
 
     [[nodiscard]] bool tree_is_exact() const noexcept { return true; }
