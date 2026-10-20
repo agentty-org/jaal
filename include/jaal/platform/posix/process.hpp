@@ -9,12 +9,19 @@
 //
 //   Linux    pidfd_open(2). Exact: it becomes readable when THE LEADER
 //            exits, whatever its descendants are doing, and it cannot be
-//            confused by a pid reused after the exit.
+//            confused by a pid reused after the exit. Where pidfd_open is
+//            missing (kernel < 5.3) or denied (seccomp, some containers), a
+//            watcher thread waits for the leader with waitid(WNOWAIT) and
+//            signals an eventfd: same handle semantics, still exact.
 //
 //   other    a "death pipe": a pipe created before fork whose write end the
 //   POSIX    child inherits and never writes to. When every copy of that end
 //            is closed the parent's read end reports hangup. Deliberately
 //            NOT close-on-exec, or exec would look like an exit.
+//
+// spawn() and adopt() never return a process whose exit_handle() can't
+// fire: when no mechanism works they fail instead. A child nobody can see
+// end makes every caller wait out its deadline, or forever.
 //
 // Those two are not the same statement, and the difference is visible:
 // descendants inherit the death pipe, so it closes when the whole TREE has

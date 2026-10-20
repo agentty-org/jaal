@@ -5,6 +5,11 @@
 # [support.signal]); the loop-side install/uninstall bookkeeping is under a
 # mutex that the handler never takes.
 platform/posix/signals.cpp: mutex atomic
+# The exit watcher (Linux without pidfd_open): one detached thread per child,
+# blocked in waitid(WNOWAIT) on that pid. Detached because joining it from
+# ~posix_process could hang on a child that won't die; it owns only fds it
+# was handed and ends when the child does.
+platform/posix/process.cpp: thread detach
 
 # Same shape on Windows: the console control handler runs on a thread
 # Windows creates and touches only atomics; install/uninstall use a mutex.

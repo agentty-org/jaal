@@ -43,7 +43,10 @@
 #endif
 
 #include <chrono>
+#include <cerrno>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 #include <thread>
 #include <vector>
@@ -55,6 +58,12 @@
 #  include <fcntl.h>
 #  include <pthread.h>
 #  include <unistd.h>
+#endif
+#if defined(__linux__)
+#  include <sys/syscall.h>
+#  ifndef SYS_pidfd_open
+#    define SYS_pidfd_open 434
+#  endif
 #endif
 
 using namespace std::chrono_literals;
@@ -454,6 +463,83 @@ int main() {
     // correct when it passes the suite, and sim is not exempt from it.
     int r = suite<sim_fixture>(sim_fixture::name);
     r |= suite<posix_fixture>(posix_fixture::name);
+
+    // The exit is the LEADER's, and it is seen promptly. A background
+    // grandchild keeps stdout open long after the shell returns; the exit
+    // handle must not wait for it. This is the shape of nearly every real
+    // tool command, and it hung until the caller's deadline when the exit
+    // couldn't be watched at all (no pidfd, no fallback).
+    {
+        auto p = posix_fixture::process::spawn(
+            posix_fixture::sh("(sleep 20 &); printf bg")).value();
+        const auto t0 = std::chrono::steady_clock::now();
+        bool fired = false;
+        while (std::chrono::steady_clock::now() - t0 < 3s) {
+            if (readable_now<native_reactor>(p.exit_handle())) { fired = true; break; }
+            ::usleep(2000);
+        }
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        const bool exact = p.exit_is_exact();
+        auto st = p.reap();
+        if (!fired || !st || !exact) {
+            std::fprintf(stderr, "process conformance[posix_process]: leader exit not seen "
+                         "promptly (fired=%d after %lldms, exact=%d, reaped=%d)\n",
+                         int(fired), static_cast<long long>(ms), int(exact), int(bool(st)));
+            r |= 1;
+        } else {
+            std::printf("process conformance[posix_process]: leader exit seen in %lldms "
+                        "with a grandchild holding stdout\n", static_cast<long long>(ms));
+        }
+    }
+
+#if defined(__linux__)
+    // The no-pidfd lane must actually BE one: if the shim silently stopped
+    // working, this run would just repeat the pidfd path and prove nothing.
+    if (const char* e = std::getenv("JAAL_EXPECT_NO_PIDFD"); e && *e == '1') {
+        errno = 0;
+        const long fd = ::syscall(SYS_pidfd_open, ::getpid(), 0u);
+        if (fd >= 0 || errno != ENOSYS) {
+            if (fd >= 0) ::close(static_cast<int>(fd));
+            std::fputs("process conformance[posix_process]: expected pidfd_open to be "
+                       "denied (LD_PRELOAD shim not active)\n", stderr);
+            r |= 1;
+        } else {
+            std::puts("process conformance[posix_process]: running without pidfd_open");
+        }
+    }
+
+    // A process dropped before reap leaves no zombie behind, on either
+    // path. With the fallback watcher, it is the watcher that reaps then.
+    {
+        ::pid_t pid = -1;
+        {
+            auto p = posix_fixture::process::spawn(posix_fixture::sh("exit 0")).value();
+            pid = static_cast<::pid_t>(p.id());
+            posix_fixture::run_out(p);
+        }   // destroyed unreaped
+        bool gone = false;
+        for (int i = 0; i < 400 && !gone; ++i) {
+            const std::string stat = "/proc/" + std::to_string(pid) + "/stat";
+            const int fd = ::open(stat.c_str(), O_RDONLY | O_CLOEXEC);
+            if (fd < 0) { gone = true; break; }
+            char buf[256] = {};
+            const auto n = ::read(fd, buf, sizeof buf - 1);
+            ::close(fd);
+            // "pid (comm) Z ...": still a zombie, or the pid already reused
+            // by something else (then it's not ours, which also means gone).
+            const char* rp = std::strrchr(buf, ')');
+            if (n <= 0 || !rp || rp[1] != ' ' || rp[2] != 'Z') { gone = true; break; }
+            ::usleep(5000);
+        }
+        if (!gone) {
+            std::fprintf(stderr, "process conformance[posix_process]: unreaped child %d left a zombie\n", pid);
+            r |= 1;
+        } else {
+            std::puts("process conformance[posix_process]: a dropped child leaves no zombie");
+        }
+    }
+#endif
 
     // A descriptor the parent opened WITHOUT close-on-exec must still not
     // reach the child: hosts hold logs and credential files open while they

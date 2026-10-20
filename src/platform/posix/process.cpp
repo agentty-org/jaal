@@ -13,7 +13,9 @@
 
 #include <cerrno>
 #include <csignal>
+#include <cstdint>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 #include <fcntl.h>
@@ -22,6 +24,7 @@
 #include <unistd.h>
 
 #if defined(__linux__)
+#  include <sys/eventfd.h>
 #  include <sys/syscall.h>
 #endif
 
@@ -91,6 +94,81 @@ struct pipe_pair {
     if (pidfd < 0) return false;
     return ::syscall(SYS_pidfd_send_signal, pidfd, sig, nullptr, 0u) == 0;
 }
+
+/// The exit as a handle when there is no pidfd: pidfd_open is missing
+/// (kernel < 5.3) or denied (a seccomp policy, some containers).
+///
+/// A thread blocks in waitid(WNOWAIT) on this one pid and then signals an
+/// eventfd. That keeps every property the pidfd had:
+///   * exact: waitid names the leader, so a grandchild still holding the
+///     output pipe can't hold the exit back (a death pipe would)
+///   * level-triggered: nobody reads the counter, so it stays readable
+///   * WNOWAIT leaves the child waitable, so reap() still gets the status;
+///     reap() only calls waitpid once the event fired, so the pid can't be
+///     freed and reused while the watcher still waits on it
+/// Without it the exit handle was -1, a reactor watch of it failed, and
+/// every caller waited out its deadline instead.
+///
+/// Ownership of the reap: the process object reaps, unless it is destroyed
+/// first. Either way it tells the watcher through `gone`: a byte means "I
+/// reaped it", EOF means "I let go, you reap it". So exactly one side calls
+/// waitpid, and only after the exit, so the pid is never freed under a
+/// watcher still waiting on it.
+///
+/// Returns our read end and the "gone" write end, or {-1,-1}.
+struct exit_watch { int ev = -1; int gone = -1; };
+[[nodiscard]] exit_watch start_exit_watcher(::pid_t pid) {
+    exit_watch w;
+    const int ev = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (ev < 0) return w;
+    const int ev_theirs = ::fcntl(ev, F_DUPFD_CLOEXEC, 0);
+    int gone[2] = {-1, -1};
+    if (ev_theirs < 0 || ::pipe2(gone, O_CLOEXEC) != 0) {
+        ::close(ev);
+        if (ev_theirs >= 0) ::close(ev_theirs);
+        return w;
+    }
+    try {
+        // Detached on purpose: it ends when the child does, and a destructor
+        // that joined it could hang on a child that won't die.
+        std::thread([pid, ev_theirs, gone_r = gone[0]] {
+            siginfo_t si{};
+            while (::waitid(P_PID, static_cast<id_t>(pid), &si, WEXITED | WNOWAIT) < 0
+                   && errno == EINTR) {}
+            // Fired on ECHILD too: whatever happened, nobody can wait for it
+            // now, and a handle that never fires is the bug this replaces.
+            const std::uint64_t one = 1;
+            while (::write(ev_theirs, &one, sizeof one) < 0 && errno == EINTR) {}
+            ::close(ev_theirs);
+            // Now the owner may reap. If it already let go, nobody will:
+            // the zombie is ours to collect. Wait for the owner to decide.
+            pollfd pfd{gone_r, POLLIN, 0};
+            while (::poll(&pfd, 1, -1) < 0 && errno == EINTR) {}
+            char b = 0;
+            const auto n = ::read(gone_r, &b, 1);
+            ::close(gone_r);
+            if (n == 0) {   // EOF: owner destroyed without reaping
+                int st = 0;
+                while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+            }               // a byte: the owner reaped it
+        }).detach();
+    } catch (...) {
+        ::close(ev_theirs);
+        ::close(ev);
+        ::close(gone[0]);
+        ::close(gone[1]);
+        return w;
+    }
+    w.ev = ev;
+    w.gone = gone[1];
+    return w;
+}
+
+/// Has the watcher seen the exit? Non-blocking.
+[[nodiscard]] bool watcher_fired(int fd) {
+    pollfd pfd{fd, POLLIN, 0};
+    return ::poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN);
+}
 #endif
 
 /// Write all of `n` bytes, retrying EINTR. Async-signal-safe: no allocation,
@@ -116,6 +194,10 @@ struct posix_process::impl {
     pipe_pair death;     ///< non-Linux exit signal (we hold the read end)
 
     native_handle pidfd = invalid_handle;   ///< Linux exit signal
+    /// Linux without a pidfd: the eventfd the exit watcher signals, and the
+    /// pipe that tells it who reaps (a byte: we did; EOF: it must).
+    native_handle exit_ev   = invalid_handle;
+    native_handle exit_gone = invalid_handle;
 
     bool        merged     = false;
     /// Only meaningful for an adopted child, where the caller asserts it.
@@ -143,10 +225,19 @@ struct posix_process::impl {
 #else
             ::kill(pid, SIGKILL);
 #endif
+            // A watcher waits on this pid with WNOWAIT and reaps it itself
+            // once we let go (the exit_gone EOF below), so we must not: a
+            // reap here would free the number while it still waits on it.
             int st = 0;
-            ::waitpid(pid, &st, WNOHANG);
+#if defined(__linux__)
+            if (!is_valid(exit_gone))
+#endif
+                ::waitpid(pid, &st, WNOHANG);
         }
         if (is_valid(pidfd)) close_handle(pidfd);
+        if (is_valid(exit_ev)) close_handle(exit_ev);
+        // Last: EOF on this hands any unreaped zombie to the watcher.
+        if (is_valid(exit_gone)) close_handle(exit_gone);
     }
 
     /// Asked, not remembered: setsid() fails when the caller already leads a
@@ -159,8 +250,35 @@ struct posix_process::impl {
     }
 
     [[nodiscard]] native_handle exit_fd() const {
-        return is_valid(pidfd) ? pidfd : death.r;
+        if (is_valid(pidfd)) return pidfd;
+        if (is_valid(exit_ev)) return exit_ev;
+        return death.r;
     }
+
+#if defined(__linux__)
+    /// Make the exit watchable: the pidfd if the kernel gives one, else a
+    /// watcher. False only when neither could be had.
+    [[nodiscard]] bool watch_exit(int given_pidfd) {
+        pidfd = given_pidfd >= 0 ? given_pidfd : open_pidfd(pid);
+        if (!is_valid(pidfd)) {
+            const auto w = start_exit_watcher(pid);
+            exit_ev   = w.ev;
+            exit_gone = w.gone;
+        }
+        // Both mean "the leader ended", not "the tree let go".
+        exit_exact = is_valid(pidfd) || is_valid(exit_ev);
+        return exit_exact;
+    }
+
+    /// We reaped it: tell the watcher, so it doesn't reap a reused pid.
+    void reaped_by_us() {
+        if (!is_valid(exit_gone)) return;
+        const char b = 1;
+        while (::write(exit_gone, &b, 1) < 0 && errno == EINTR) {}
+        close_handle(exit_gone);
+        exit_gone = invalid_handle;
+    }
+#endif
 };
 
 posix_process::posix_process() : p_(std::make_unique<impl>()) {}
@@ -307,10 +425,7 @@ result<posix_process> posix_process::spawn(const process_spec& spec) {
     s.in.close_read();
     s.death.close_write();         // the child holds the only other copy
 
-#if defined(__linux__)
-    s.pidfd      = open_pidfd(pid);
-    s.exit_exact = is_valid(s.pidfd);
-#else
+#if !defined(__linux__)
     s.exit_exact = false;
 #endif
 
@@ -331,6 +446,21 @@ result<posix_process> posix_process::spawn(const process_spec& spec) {
         s.pid    = -1;
         return std::unexpected(error::from_errno(child_errno,
                                                  "posix_process: exec"));
+    }
+
+    // Only now, with exec confirmed: a watcher started earlier would race
+    // the failed-exec reap above for the same pid.
+#if defined(__linux__)
+    const bool watched = s.watch_exit(-1);
+#else
+    const bool watched = is_valid(s.death.r);
+#endif
+    if (!watched) {
+        // Never hand back a child whose exit can't be observed: every caller
+        // would wait for it until a deadline, or forever. ~impl kills it.
+        return std::unexpected(error::make(
+            std::errc::resource_unavailable_try_again,
+            "posix_process: no way to watch the child's exit"));
     }
 
     // Non-blocking reads: a drain must never block past what is there.
@@ -361,26 +491,27 @@ result<posix_process> posix_process::adopt(adopted_child c) {
     s.in.w   = c.stdin_fd;
 
 #if defined(__linux__)
-    // Prefer the spawner's pidfd; open one otherwise. Either way the exit is
-    // exact -- a pidfd names THIS child and cannot be confused by pid reuse,
-    // which matters more here than for our own fork(): an adopted pid came
-    // from code we did not write.
-    s.pidfd      = (c.pidfd >= 0) ? c.pidfd : open_pidfd(c.pid);
-    s.exit_exact = is_valid(s.pidfd);
+    // Prefer the spawner's pidfd; open one, or start a watcher, otherwise.
+    // All three name THIS child and survive pid reuse, which matters more
+    // here than for our own fork(): an adopted pid came from code we did not
+    // write. (The watcher works because a spawner that forks or clones hands
+    // us its own child, which waitid can wait for.)
+    const bool watched = s.watch_exit(c.pidfd);
 #else
     if (c.pidfd >= 0) close_handle(c.pidfd);
     s.exit_exact = false;
+    const bool watched = false;
 #endif
 
-    if (!is_valid(s.pidfd)) {
-        // No watchable exit, and we cannot retrofit one: the death-pipe trick
-        // needs a descriptor the child inherited, and this child was already
+    if (!watched) {
+        // No watchable exit, and we cannot retrofit a death pipe: that needs
+        // a descriptor the child inherited, and this child was already
         // running before we were asked. Refuse rather than hand back a
         // process whose exit_handle() never fires -- a caller waiting on it
         // would hang forever, which is worse than a clear failure here.
         return std::unexpected(error::make(
             std::errc::not_supported,
-            "posix_process::adopt: no pidfd, so the exit is not watchable"));
+            "posix_process::adopt: the exit is not watchable"));
     }
 
     if (is_valid(s.out.r)) ::fcntl(s.out.r, F_SETFL, O_NONBLOCK);
@@ -438,6 +569,14 @@ result<exit_status> posix_process::reap() {
         return std::unexpected(error::make(std::errc::no_such_process,
                                            "posix_process: nothing to reap"));
     int st = 0;
+#if defined(__linux__)
+    // With a watcher, the pid may only be reaped once it has seen the exit:
+    // reaping first frees the pid while the watcher still waits on it, and a
+    // new process could take the number. Before that, the child is running.
+    if (!is_valid(p_->pidfd) && is_valid(p_->exit_ev) && !watcher_fired(p_->exit_ev))
+        return std::unexpected(error::make(std::errc::operation_would_block,
+                                           "posix_process: still running"));
+#endif
     // Off Linux the exit signal is the death pipe, and it fires when the
     // child's last copy of the write end closes -- during exit, slightly
     // BEFORE the kernel makes the pid waitable. A WNOHANG reap right after
@@ -468,6 +607,9 @@ result<exit_status> posix_process::reap() {
     else if (WIFSIGNALED(st))
         p_->status = exit_status{exit_status::kind::signalled, WTERMSIG(st)};
     p_->reaped = true;
+#if defined(__linux__)
+    p_->reaped_by_us();
+#endif
     return p_->status;
 }
 

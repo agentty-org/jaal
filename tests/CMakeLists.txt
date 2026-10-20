@@ -87,6 +87,19 @@ jaal_test(kernel_clocked_test kernel/clocked_test.cpp)
 jaal_test(platform_conformance platform/conformance.cpp)
 if(UNIX)
     jaal_test(platform_process_conformance platform/process_conformance.cpp)
+    # The same suite with pidfd_open denied, so the fallback exit watcher
+    # meets every check the pidfd path does. Without the fallback, a child's
+    # exit was never observed there and every run waited out its deadline.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        enable_language(C)
+        add_library(jaal_no_pidfd_shim SHARED platform/no_pidfd_shim.c)
+        target_link_libraries(jaal_no_pidfd_shim PRIVATE ${CMAKE_DL_LIBS})
+        add_test(NAME platform_process_conformance_no_pidfd
+                 COMMAND platform_process_conformance)
+        set_tests_properties(platform_process_conformance_no_pidfd PROPERTIES
+            ENVIRONMENT "LD_PRELOAD=$<TARGET_FILE:jaal_no_pidfd_shim>;JAAL_EXPECT_NO_PIDFD=1")
+        add_dependencies(platform_process_conformance jaal_no_pidfd_shim)
+    endif()
     # The cross-process critical section. Checks 9-13 FORK, because the only
     # statement a file lock makes is about the kernel arbitrating between
     # real processes — a sim that modelled that would assert its own map.
