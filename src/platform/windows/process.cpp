@@ -87,27 +87,102 @@ struct pipe_pair {
     owned_handle r, w;
 };
 
-// Both ends inheritable; the caller clears inheritance on the parent's end.
+// Neither end is inheritable. A handle is only ever made inheritable for the
+// one CreateProcess that hands it over (see child_handles), so a spawn on
+// another thread can't pick up this child's pipe and hold it open.
 result<pipe_pair> make_pipe() {
-    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
     HANDLE r = nullptr, w = nullptr;
     // 64 KiB: a chatty child fills the 4 KiB default in one printf and then
     // stalls on our drain.
-    if (!::CreatePipe(&r, &w, &sa, 64 * 1024)) return std::unexpected(win_error("CreatePipe"));
+    if (!::CreatePipe(&r, &w, nullptr, 64 * 1024)) return std::unexpected(win_error("CreatePipe"));
     return pipe_pair{owned_handle{r}, owned_handle{w}};
 }
 
 result<owned_handle> open_nul(bool write) {
-    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
     HANDLE h = ::CreateFileW(L"NUL", write ? GENERIC_WRITE : GENERIC_READ,
-                             FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+                             FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
     if (h == INVALID_HANDLE_VALUE) return std::unexpected(win_error("CreateFile(NUL)"));
     return owned_handle{h};
 }
 
-void not_inherited(const owned_handle& h) {
-    if (h) ::SetHandleInformation(static_cast<HANDLE>(h.get()), HANDLE_FLAG_INHERIT, 0);
-}
+// The child's three std handles as inheritable duplicates, and the attribute
+// list that limits inheritance to exactly those. Without the list,
+// CreateProcess(bInheritHandles=TRUE) hands the child EVERY inheritable
+// handle in the process, including another spawn's pipe ends, and that
+// child then holds the other one's pipe open: its reader sees no EOF until
+// both are gone. Duplicating keeps our own handles (and the parent's std
+// handles) non-inheritable the whole time.
+class child_handles {
+public:
+    // A handle the child should get. `ours` is one this spawn made (a pipe
+    // end, NUL): failing to pass it is an error. Otherwise it is this
+    // process's own std handle, which may be missing (a GUI parent) or not
+    // duplicable; then the child just gets none, as it would have before.
+    struct source { HANDLE h; bool ours; };
+
+    result<void> init(source in, source out, source err) {
+        const source want[3] = {in, out, err};
+        for (int i = 0; i < 3; ++i) {
+            const HANDLE h = want[i].h;
+            if (!h || h == INVALID_HANDLE_VALUE) continue;
+            // stderr merged into stdout is one handle: share the duplicate.
+            for (int j = 0; j < i; ++j)
+                if (want[j].h == h) { std_[i] = std_[j]; break; }
+            if (std_[i]) continue;
+            HANDLE dup = nullptr;
+            if (!::DuplicateHandle(::GetCurrentProcess(), h, ::GetCurrentProcess(), &dup,
+                                   0, TRUE, DUPLICATE_SAME_ACCESS)) {
+                if (want[i].ours) return std::unexpected(win_error("DuplicateHandle"));
+                continue;
+            }
+            owned_[count_++] = owned_handle{dup};
+            std_[i] = dup;
+        }
+        SIZE_T size = 0;
+        ::InitializeProcThreadAttributeList(nullptr, 1, 0, &size);
+        buf_.resize(size);
+        list_ = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(buf_.data());
+        if (!::InitializeProcThreadAttributeList(list_, 1, 0, &size)) {
+            list_ = nullptr;
+            return std::unexpected(win_error("InitializeProcThreadAttributeList"));
+        }
+        // An empty HANDLE_LIST is invalid, so with no std handles to pass
+        // there is no list and bInheritHandles is FALSE (inherit()).
+        if (count_ != 0) {
+            for (std::size_t i = 0; i < count_; ++i) inherit_[i] = static_cast<HANDLE>(owned_[i].get());
+            if (!::UpdateProcThreadAttribute(list_, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                             inherit_, count_ * sizeof(HANDLE), nullptr, nullptr))
+                return std::unexpected(win_error("UpdateProcThreadAttribute(HANDLE_LIST)"));
+        }
+        return {};
+    }
+
+    child_handles() = default;
+    child_handles(const child_handles&) = delete;
+    child_handles& operator=(const child_handles&) = delete;
+    ~child_handles() { if (list_) ::DeleteProcThreadAttributeList(list_); }
+
+    [[nodiscard]] HANDLE in()  const noexcept { return std_[0]; }
+    [[nodiscard]] HANDLE out() const noexcept { return std_[1]; }
+    [[nodiscard]] HANDLE err() const noexcept { return std_[2]; }
+    [[nodiscard]] bool inherit() const noexcept { return count_ != 0; }
+    [[nodiscard]] LPPROC_THREAD_ATTRIBUTE_LIST list() const noexcept { return count_ ? list_ : nullptr; }
+
+    // The child has its copies once CreateProcess returns. Ours go now, so
+    // our reader sees EOF when the child ends.
+    void release() noexcept {
+        for (auto& h : owned_) h.reset();
+        count_ = 0;
+    }
+
+private:
+    owned_handle                 owned_[3];
+    HANDLE                       inherit_[3] = {};
+    HANDLE                       std_[3]     = {};
+    std::size_t                  count_      = 0;
+    std::vector<BYTE>            buf_;
+    LPPROC_THREAD_ATTRIBUTE_LIST list_ = nullptr;
+};
 
 }  // namespace
 
@@ -165,7 +240,6 @@ result<windows_process> windows_process::spawn(const process_spec& spec) {
             if (!p) return std::unexpected(p.error());
             child_in = std::move(p->r);
             s.in_w   = std::move(p->w);
-            not_inherited(s.in_w);
             break;
         }
         case stream_to::null: {
@@ -188,7 +262,6 @@ result<windows_process> windows_process::spawn(const process_spec& spec) {
                 if (!p) return std::unexpected(p.error());
                 child  = std::move(p->w);
                 parent = std::move(p->r);
-                not_inherited(parent);
                 return {};
             }
             case stream_to::null: {
@@ -208,16 +281,30 @@ result<windows_process> windows_process::spawn(const process_spec& spec) {
             return std::unexpected(r.error());
     }
 
-    STARTUPINFOW si{};
-    si.cb      = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput  = child_in  ? static_cast<HANDLE>(child_in.get())
-                              : ::GetStdHandle(STD_INPUT_HANDLE);
-    si.hStdOutput = child_out ? static_cast<HANDLE>(child_out.get())
-                              : ::GetStdHandle(STD_OUTPUT_HANDLE);
-    si.hStdError  = merge     ? si.hStdOutput
-                  : child_err ? static_cast<HANDLE>(child_err.get())
-                              : ::GetStdHandle(STD_ERROR_HANDLE);
+    child_handles std_h;
+    {
+        using src = child_handles::source;
+        const src in  = child_in  ? src{static_cast<HANDLE>(child_in.get()), true}
+                                  : src{::GetStdHandle(STD_INPUT_HANDLE), false};
+        const src out = child_out ? src{static_cast<HANDLE>(child_out.get()), true}
+                                  : src{::GetStdHandle(STD_OUTPUT_HANDLE), false};
+        const src err = merge     ? out
+                      : child_err ? src{static_cast<HANDLE>(child_err.get()), true}
+                                  : src{::GetStdHandle(STD_ERROR_HANDLE), false};
+        if (auto r = std_h.init(in, out, err); !r) return std::unexpected(r.error());
+    }
+    // The duplicates are what the child gets; the originals can go now.
+    child_in.reset();
+    child_out.reset();
+    child_err.reset();
+
+    STARTUPINFOEXW si{};
+    si.StartupInfo.cb         = sizeof(si);
+    si.StartupInfo.dwFlags    = STARTF_USESTDHANDLES;
+    si.StartupInfo.hStdInput  = std_h.in();
+    si.StartupInfo.hStdOutput = std_h.out();
+    si.StartupInfo.hStdError  = std_h.err();
+    si.lpAttributeList        = std_h.list();
 
     // ── the tree: a job that dies with its last handle ────────────────
     HANDLE job = ::CreateJobObjectW(nullptr, nullptr);
@@ -241,19 +328,19 @@ result<windows_process> windows_process::spawn(const process_spec& spec) {
     std::vector<wchar_t> env = env_block(spec);
     const std::wstring cwd = widen(spec.cwd);
 
-    DWORD flags = CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED;
+    DWORD flags = CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
     // new_session: no console of ours to read or to receive our Ctrl-C.
     if (spec.new_session) flags |= CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
 
     PROCESS_INFORMATION pi{};
-    const BOOL ok = ::CreateProcessW(nullptr, cmdline.data(), nullptr, nullptr, TRUE, flags,
+    const BOOL ok = ::CreateProcessW(nullptr, cmdline.data(), nullptr, nullptr,
+                                     std_h.inherit() ? TRUE : FALSE, flags,
                                      env.empty() ? nullptr : env.data(),
-                                     cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
+                                     cwd.empty() ? nullptr : cwd.c_str(),
+                                     &si.StartupInfo, &pi);
     // The child holds its own copies now. Closing ours is what lets the
     // parent see EOF when the child ends.
-    child_in.reset();
-    child_out.reset();
-    child_err.reset();
+    std_h.release();
     if (!ok) return std::unexpected(win_error("CreateProcessW"));
 
     s.process = owned_handle{pi.hProcess};

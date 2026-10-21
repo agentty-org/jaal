@@ -85,8 +85,9 @@ jaal_test(kernel_snapshot_test kernel/snapshot_test.cpp)
 # timed recording replays to the live model.
 jaal_test(kernel_clocked_test kernel/clocked_test.cpp)
 jaal_test(platform_conformance platform/conformance.cpp)
+# Every process backend: posix_process here, windows_process under wine.
+jaal_test(platform_process_conformance platform/process_conformance.cpp)
 if(UNIX)
-    jaal_test(platform_process_conformance platform/process_conformance.cpp)
     # The same suite with pidfd_open denied, so the fallback exit watcher
     # meets every check the pidfd path does. Without the fallback, a child's
     # exit was never observed there and every run waited out its deadline.

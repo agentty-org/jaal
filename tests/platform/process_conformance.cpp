@@ -36,6 +36,7 @@
 #endif
 
 #if defined(_WIN32)
+#  include <windows.h>
 #  include <jaal/platform/windows/process.hpp>
 #  include <jaal/platform/windows/wait_reactor.hpp>
 #else
@@ -378,7 +379,13 @@ int spawn_and_reap_leak_nothing() {
         (void)p.reap();
         (void)drain(*p.stdout_handle());
     }
-    const int after = open_fd_count();
+    // Without a pidfd the exit watcher thread closes its own ends just after
+    // the reap, so give it a moment. A real leak never settles.
+    int after = open_fd_count();
+    for (int i = 0; i < 200 && after > before; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        after = open_fd_count();
+    }
     if (after > before) return 121;
     return 0;
 }
@@ -455,6 +462,51 @@ int main() {
             r |= 1;
         } else {
             std::puts("process conformance[windows_process]: close_stdin gives the child EOF");
+        }
+    }
+
+    // Our ends of a child's pipes are never inheritable, so nothing spawned
+    // later can hold them open.
+    {
+        auto spec = windows_fixture::cmd("exit /b 0");
+        spec.stdin_from = pf::stream_to::pipe;
+        auto p = windows_fixture::process::spawn(spec).value();
+        DWORD fo = 0, fi = 0;
+        ::GetHandleInformation(static_cast<HANDLE>(p.stdout_handle()->get()), &fo);
+        ::GetHandleInformation(static_cast<HANDLE>(p.stdin_handle()->get()), &fi);
+        windows_fixture::run_out(p);
+        (void)p.reap();
+        if ((fo | fi) & HANDLE_FLAG_INHERIT) {
+            std::fputs("process conformance[windows_process]: our pipe end is inheritable\n", stderr);
+            r |= 1;
+        } else {
+            std::puts("process conformance[windows_process]: our pipe ends are not inheritable");
+        }
+    }
+
+    // A child gets its std handles and nothing else. An inheritable handle
+    // this process holds -- standing in for another thread's spawn caught
+    // between CreatePipe and CreateProcess -- must not reach it, or that
+    // pipe's reader sees no EOF until our unrelated child exits.
+    {
+        SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+        HANDLE rd = nullptr, wr = nullptr;
+        ::CreatePipe(&rd, &wr, &sa, 0);
+        auto kid = windows_fixture::runs_silently();
+        ::CloseHandle(wr);                // ours was the only writer
+        // EOF (broken pipe) at once, unless the child holds a copy.
+        DWORD avail = 0;
+        const bool eof = !::PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr)
+                         && ::GetLastError() == ERROR_BROKEN_PIPE;
+        ::CloseHandle(rd);
+        (void)kid.stop(pf::stop_mode::forceful, pf::stop_scope::tree);
+        windows_fixture::run_out(kid);
+        (void)kid.reap();
+        if (!eof) {
+            std::fputs("process conformance[windows_process]: a child inherited an unrelated handle\n", stderr);
+            r |= 1;
+        } else {
+            std::puts("process conformance[windows_process]: a child inherits only its std handles");
         }
     }
     return r;
