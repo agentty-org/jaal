@@ -36,6 +36,9 @@ struct epoll_reactor::state {
         int           fd = -1;
         std::uint64_t token = 0;
         bool          live  = false;
+        // Its fd was closed while watched and the number was watched again.
+        // Closing already took it out of epoll; a DEL would hit the new one.
+        bool          stale = false;
     };
     std::vector<slot>          slots;
     std::vector<std::uint32_t> free;
@@ -77,6 +80,9 @@ result<void> epoll_reactor::registration::modify(interest what) {
         return std::unexpected(error::make(std::errc::invalid_argument,
                                            "modify: registration is empty"));
     auto& sl = s->slots[slot_];
+    if (sl.stale)
+        return std::unexpected(error::make(std::errc::bad_file_descriptor,
+                                           "modify: the fd was closed while watched"));
     epoll_event ev{};
     ev.events = EPOLLRDHUP;                              // level-triggered
     if (wants_read(what))  ev.events |= EPOLLIN;
@@ -135,14 +141,19 @@ epoll_reactor::watch(handle fd, interest what, std::uint64_t token) {
                                                "watch: fd already watched by this reactor"));
         return std::unexpected(error::from_errno(e, "epoll_ctl add"));
     }
-    s.slots[idx] = {fd, token, true};
+    s.slots[idx] = {fd, token, true, false};
+    // ADD succeeds on a number another live slot holds only if that slot's
+    // fd was closed while watched. Mark it, so dropping it later leaves this
+    // watch alone.
+    for (std::uint32_t i = 0; i < s.slots.size(); ++i)
+        if (i != idx && s.slots[i].live && s.slots[i].fd == fd) s.slots[i].stale = true;
     return registration(std::weak_ptr<state>(s_), idx);
 }
 
 void epoll_reactor::unwatch(state& s, std::uint32_t slot) noexcept {
     if (slot >= s.slots.size() || !s.slots[slot].live) return;
     // The fd may already be closed by its owner; EBADF/ENOENT are fine.
-    ::epoll_ctl(s.ep, EPOLL_CTL_DEL, s.slots[slot].fd, nullptr);
+    if (!s.slots[slot].stale) ::epoll_ctl(s.ep, EPOLL_CTL_DEL, s.slots[slot].fd, nullptr);
     s.slots[slot].live = false;
     s.free.push_back(slot);
 }

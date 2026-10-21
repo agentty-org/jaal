@@ -79,6 +79,13 @@ struct wait_result {
 // fails with std::errc::file_exists on every backend. epoll can't hold one
 // fd twice, and letting poll/WFMO allow it would make programs that work
 // on one OS fail on another.
+//
+// Drop the registration BEFORE closing the handle. A closed fd number is
+// reused by the next open, and a registration that outlives its fd names
+// whatever got that number. epoll survives it (the stale slot is marked when
+// the number is watched again); poll and kqueue refuse the new watch with
+// file_exists. Declaring the registration after the handle it watches gets
+// the order right for free.
 template <class R>
 concept Reactor =
     requires {

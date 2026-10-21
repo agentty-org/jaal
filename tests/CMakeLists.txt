@@ -109,6 +109,8 @@ endif()
 # modify() against a real socket send buffer. POSIX: uses socketpair().
 if(UNIX)
     jaal_test(platform_modify_test platform/modify_test.cpp)
+    # A registration that outlives its fd can't silence a later watch.
+    jaal_test(platform_fd_reuse_test platform/fd_reuse_test.cpp)
     jaal_test(platform_same_tty_test platform/same_tty_test.cpp)
     if(NOT APPLE)
         target_link_libraries(platform_same_tty_test PRIVATE util)
