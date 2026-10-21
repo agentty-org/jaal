@@ -39,6 +39,7 @@
 #include "kernel/replay.hpp"
 #include "kernel/run.hpp"
 #include "kernel/scope.hpp"
+#include "kernel/strays.hpp"
 #include "kernel/timeline.hpp"
 #include "kernel/trace.hpp"
 #include "host/given.hpp"

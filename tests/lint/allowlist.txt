@@ -52,6 +52,8 @@ kernel/loop.hpp: loop_key thread_local
 kernel/pool.hpp: thread detach mutex cap_mint
 # scope: joins every helper thread; `observed` is an atomic flag per helper.
 kernel/scope.hpp: thread atomic cap_mint
+# strays: one process-wide counter of threads a shutdown gave up on.
+kernel/strays.hpp: atomic
 # The "who waits on this thread" set that lets a mailbox refuse a post
 # that would deadlock (a scope helper sending to the loop that joins it).
 # Same as mailbox.hpp: it names std::thread::id, it never spawns a thread.

@@ -66,6 +66,7 @@ jaal_test(kernel_delay_test kernel/delay_test.cpp)
 # (admission closes with stop) and check 4 (an abandoned member leaves safely)
 # are the two a hand-rolled registry gets wrong.
 jaal_test(kernel_stop_group_test kernel/stop_group_test.cpp)
+jaal_test(kernel_strays_test kernel/strays_test.cpp)
 # worker_group: stop() is a barrier with no grace. Check 1 is the point.
 jaal_test(kernel_worker_group_test kernel/worker_group_test.cpp)
 jaal_test(kernel_lock_order_test kernel/lock_order_test.cpp)

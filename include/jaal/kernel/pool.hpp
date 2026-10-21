@@ -57,6 +57,7 @@
 #include "../core/unique_function.hpp"
 #include "../core/capability.hpp"
 #include "lock_order.hpp"
+#include "strays.hpp"
 
 namespace jaal::kernel {
 
@@ -253,6 +254,7 @@ private:
                 {
                     std::lock_guard lk(c->m);
                     --c->isolated_running;
+                    if (c->abandoned) detail::strays::left();
                 }
                 c->exited_cv.notify_all();
             });
@@ -260,6 +262,7 @@ private:
             {
                 std::lock_guard lk(c_->m);
                 --c_->isolated_running;  // no thread was created
+                if (c_->abandoned) detail::strays::left();
             }
             post_job(std::move(*box));   // the OS refused a thread: use the pool
             return;
@@ -421,6 +424,12 @@ private:
         {
             std::lock_guard lk(c_->m);
             abandoned = (n - std::min(c_->exited, n)) + c_->isolated_running;
+            // Counted once, in the same lock the threads count out under, so
+            // jaal::strays() is exact. A second shutdown adds nothing.
+            if (!c_->abandoned) {
+                c_->abandoned = true;
+                detail::strays::add(abandoned);
+            }
         }
         // Some are stuck. Detach all: joining even the finished ones one by
         // one would risk blocking on a stuck one first. They co-own `core`.
@@ -494,6 +503,8 @@ private:
         std::size_t                   isolated_running = 0;
         unsigned                      max      = 4;
         bool                          stopping = false;
+        // Shutdown gave up waiting; threads still out are jaal::strays().
+        bool                          abandoned = false;
         error_fn                      on_error;
     };
 
@@ -526,6 +537,7 @@ private:
         {
             std::lock_guard lk(c->m);
             ++c->exited;
+            if (c->abandoned) detail::strays::left();
         }
         c->exited_cv.notify_all();
     }

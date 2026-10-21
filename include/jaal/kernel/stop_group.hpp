@@ -66,6 +66,7 @@
 #include <stop_token>
 
 #include "../core/capability.hpp"
+#include "strays.hpp"
 
 namespace jaal::kernel {
 
@@ -79,6 +80,7 @@ class stop_group {
         std::stop_source        src;
         std::size_t             live    = 0;
         bool                    closed  = false;
+        bool                    abandoned = false;   // members still out are strays()
     };
 
   public:
@@ -115,6 +117,7 @@ class stop_group {
             {
                 std::lock_guard lk(c_->m);
                 last = (--c_->live == 0);
+                if (c_->abandoned) detail::strays::left();
             }
             // Notify outside the lock: the waiter re-takes it immediately.
             if (last) c_->cv.notify_all();
@@ -179,6 +182,10 @@ class stop_group {
             c_->cv.wait_for(lk, *grace, done);
         else
             c_->cv.wait(lk, done);
+        if (c_->live != 0 && !c_->abandoned) {
+            c_->abandoned = true;
+            detail::strays::add(c_->live);
+        }
         return c_->live;
     }
 
