@@ -203,6 +203,9 @@ now fails it.
 **Decision.** A deadline becomes a wait timeout by rounding up, in one
 function; duration conversions clamp instead of overflowing.
 
+*Refined by [D46](#d46-waits-are-in-nanoseconds): the round-up now happens
+in the reactor, at the OS's own resolution, not at a whole millisecond.*
+
 **Why.** Rounding down made maya wake just before a timer, find nothing, and
 spin. And `duration_cast<nanoseconds>(milliseconds::max())` wraps to −1 ms,
 so a "never" timer fired at once — found by a test, one step before the
@@ -1115,3 +1118,35 @@ so the runtime `scope_misuse` checks became compile errors.
 
 **Cost.** Breaking: a helper that borrowed now takes its inputs as
 arguments, and a shared counter or flag moves into a `co_owned` struct.
+
+## D46. Waits are in nanoseconds
+
+**Decision.** `Reactor::wait` takes a `wait_timeout`, built from any
+duration and kept in nanoseconds. `timeout_from` is exact. Each backend
+waits with the finest call its OS has and rounds UP to it: `epoll_pwait2`
+or `ppoll` on Linux, a `kevent` timespec on macOS, a high-resolution
+waitable timer on Windows. Where none exists (an old kernel, plain
+`poll`), it falls back to whole milliseconds, rounded up.
+
+**Why.** A frame pacer at 60 Hz needs 16.67 ms. Rounding to a whole
+millisecond made every frame 17 ms: 2% slow, and always on a millisecond
+edge, so a wallpaper drifts against the display's vblank and judders
+(neowall had carried its own timerfd pacer to avoid exactly this).
+Rounding was in the right direction (D16) at the wrong layer: the kernel
+can't know the OS's granularity, the backend can.
+
+**Why a type, not `optional<nanoseconds>`.** Converting
+`milliseconds::max()` to nanoseconds multiplies by a million and wraps
+negative, so "wait forever" became "don't wait". `wait_timeout`
+saturates on construction: anything too large to say in nanoseconds
+means indefinitely. Every caller that passed `milliseconds` still
+compiles.
+
+**The rule that stayed.** A deadline in the future never becomes a 0
+timeout (`timeout_from` returns at least 1 ns), and no backend may wake
+early. The conformance suite checks both: twenty 16.67 ms waits, none
+short, and on Linux the best of them under 17 ms.
+
+**Cost.** Breaking for anything that implements `Reactor` outside jaal
+(none known). Windows uses one more of WaitForMultipleObjects' 64 slots,
+so `max_watched` is 62. `wait_hint()` may return any duration.

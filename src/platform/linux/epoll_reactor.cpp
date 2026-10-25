@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <climits>
+#include <ctime>
 #include <vector>
 
 #include <sys/epoll.h>
@@ -19,12 +20,43 @@ namespace {
 // 0 can never collide with one.
 constexpr std::uint64_t kWakeTag = 0;
 
-int epoll_timeout(std::optional<std::chrono::milliseconds> t) noexcept {
+// epoll_wait's int milliseconds, for kernels without epoll_pwait2. Rounds UP
+// (D16) and clamps before narrowing.
+int epoll_timeout_ms(std::optional<std::chrono::nanoseconds> t) noexcept {
     if (!t) return -1;
-    const auto c = t->count();
-    if (c <= 0) return 0;
-    if (c >= INT_MAX) return INT_MAX;       // clamp before narrowing
+    if (t->count() <= 0) return 0;
+    const auto c = std::chrono::ceil<std::chrono::milliseconds>(*t).count();
+    if (c >= INT_MAX) return INT_MAX;
     return static_cast<int>(c);
+}
+
+// epoll_pwait2 (Linux 5.11, glibc 2.35) waits to the nanosecond. An older
+// kernel says ENOSYS once; that reactor then takes the ms path for good.
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 35))
+#  define JAAL_HAVE_EPOLL_PWAIT2 1
+#endif
+
+// `ms_only` is the reactor's own flag: a reactor is waited on from one thread.
+int epoll_wait_for(int ep, epoll_event* evs, int max, bool& ms_only,
+                   std::optional<std::chrono::nanoseconds> t) noexcept {
+#ifdef JAAL_HAVE_EPOLL_PWAIT2
+    if (!ms_only) {
+        timespec ts{};
+        timespec* tp = nullptr;
+        if (t) {
+            const auto ns = t->count() > 0 ? t->count() : 0;
+            ts.tv_sec  = static_cast<time_t>(ns / 1'000'000'000);
+            ts.tv_nsec = static_cast<long>(ns % 1'000'000'000);
+            tp = &ts;
+        }
+        const int n = ::epoll_pwait2(ep, evs, max, tp, nullptr);
+        if (n >= 0 || errno != ENOSYS) return n;
+        ms_only = true;
+    }
+#else
+    ms_only = true;
+#endif
+    return ::epoll_wait(ep, evs, max, epoll_timeout_ms(t));
 }
 
 }  // namespace
@@ -32,6 +64,7 @@ int epoll_timeout(std::optional<std::chrono::milliseconds> t) noexcept {
 struct epoll_reactor::state {
     int ep   = -1;
     int wake = -1;
+    bool ms_only = false;          // no epoll_pwait2 on this kernel
     struct slot {
         int           fd = -1;
         std::uint64_t token = 0;
@@ -163,7 +196,8 @@ std::size_t epoll_reactor::watched() const noexcept {
         std::count_if(s_->slots.begin(), s_->slots.end(), [](auto& x) { return x.live; }));
 }
 
-result<wait_result> epoll_reactor::wait(std::optional<std::chrono::milliseconds> timeout) {
+result<wait_result> epoll_reactor::wait(wait_timeout wt) {
+    const std::optional<std::chrono::nanoseconds> timeout = wt.get();
     auto& s = *s_;
     epoll_event evs[17];                                 // 16 ready + the waker
     using clk = std::chrono::steady_clock;
@@ -172,10 +206,10 @@ result<wait_result> epoll_reactor::wait(std::optional<std::chrono::milliseconds>
     for (;;) {
         auto left = timeout;
         if (timeout) {
-            const auto spent = std::chrono::duration_cast<std::chrono::milliseconds>(clk::now() - start);
-            left = *timeout > spent ? *timeout - spent : std::chrono::milliseconds{0};
+            const auto spent = std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - start);
+            left = *timeout > spent ? *timeout - spent : std::chrono::nanoseconds{0};
         }
-        n = ::epoll_wait(s.ep, evs, static_cast<int>(std::size(evs)), epoll_timeout(left));
+        n = epoll_wait_for(s.ep, evs, static_cast<int>(std::size(evs)), s.ms_only, left);
         if (n >= 0) break;
         if (errno != EINTR) return std::unexpected(error::from_errno(errno, "epoll_wait"));
     }

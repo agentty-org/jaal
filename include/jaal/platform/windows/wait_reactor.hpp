@@ -76,8 +76,9 @@ public:
         std::uint32_t        slot_ = 0;
     };
 
-    /// Max handles, the WaitForMultipleObjects limit minus the waker.
-    static constexpr std::size_t max_watched = 63;
+    /// Max handles: the WaitForMultipleObjects limit (64) minus the waker
+    /// and the precise-timeout timer.
+    static constexpr std::size_t max_watched = 62;
 
     [[nodiscard]] static result<wait_reactor> create();
 
@@ -95,7 +96,7 @@ public:
     /// Force the pipe path for read interest. watch() finds pipes by itself.
     [[nodiscard]] result<registration> watch_pipe(handle h, std::uint64_t token);
 
-    [[nodiscard]] result<wait_result> wait(std::optional<std::chrono::milliseconds> timeout);
+    [[nodiscard]] result<wait_result> wait(wait_timeout timeout);
     [[nodiscard]] waker_ref           waker() const noexcept;
     [[nodiscard]] std::size_t         watched() const noexcept;
 

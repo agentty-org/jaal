@@ -100,7 +100,9 @@ subscription lifecycle. Everything else is a library on top of `task` and
 - `subscribe` only runs when the model changed.
 - A `quit` stops the rest of the current batch; later effects don't run.
 - A long stall fires a repeating timer once, not in a burst.
-- Timeouts round up, never down (no busy-spin just before a deadline).
+- Timeouts are exact to the nanosecond and round up to what the OS can wait,
+  never down (no busy-spin just before a deadline, and a 16.67 ms frame isn't
+  padded to 17).
 - An idle program sleeps: no polling, near-zero CPU.
 - A message storm is folded in bounded batches, so input and drawing still
   get turns.

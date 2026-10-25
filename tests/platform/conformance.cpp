@@ -123,6 +123,37 @@ int timeouts() {
 }
 
 template <pf::Reactor R>
+int precise_timeouts() {
+    // A frame pacer asks for 16.67 ms. Waking early is never allowed (the
+    // pacer would draw a frame too soon); waking later is the OS's
+    // granularity. Where the OS waits to the nanosecond, a fractional
+    // millisecond must not be padded out to a whole one.
+    auto r = R::create().value();
+    constexpr auto want = std::chrono::nanoseconds(16'666'667);
+    std::chrono::nanoseconds best = std::chrono::nanoseconds::max();
+    for (int i = 0; i < 20; ++i) {
+        const auto t0 = clk::now();
+        auto res = r.wait(want).value();
+        const auto got = std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0);
+        if (!res.timeout) return 81;
+        if (got < want) return 82;                 // early: the one hard rule
+        best = std::min(best, got);
+    }
+#if defined(__linux__)
+    // epoll_pwait2 / ppoll: the best of 20 lands well inside 17 ms. A
+    // reactor still rounding to whole ms waits >= 17 ms every time.
+    if (best >= std::chrono::milliseconds(17)) return 83;
+#endif
+    // nanoseconds::max() must not wrap or overflow a timespec / DWORD /
+    // 100 ns unit count: it still blocks until woken.
+    auto w = r.waker();
+    std::jthread t([w] { std::this_thread::sleep_for(50ms); w.wake(); });
+    auto res = r.wait(std::chrono::nanoseconds::max()).value();
+    if (res.timeout || !res.woken) return 84;
+    return 0;
+}
+
+template <pf::Reactor R>
 int huge_timeout_doesnt_wrap() {
     // A raw narrowing of a 64-bit timeout wraps. ms::max() happens to wrap
     // to -1 ("forever" to poll), hiding the bug; 2^32 + 50 ms wraps to 50 ms,
@@ -344,7 +375,7 @@ int wake_is_signal_safe() {
 template <pf::Reactor R>
 int suite(const char* name) {
     int (*const checks[])() = {
-        wake_from_thread<R>, wakes_coalesce<R>, timeouts<R>,
+        wake_from_thread<R>, wakes_coalesce<R>, timeouts<R>, precise_timeouts<R>,
         huge_timeout_doesnt_wrap<R>, readiness_with_token<R>, hangup_is_reported<R>,
         unwatch_on_drop<R>, readiness_persists_until_drained<R>,
         registration_outlives_reactor<R>,

@@ -26,15 +26,16 @@ constexpr std::uintptr_t kWakeIdent = 1;
 // run: wait(milliseconds::max()) failed instead of blocking). So a longer
 // timeout is waited in chunks of at most one day; wait() loops until the
 // caller's full timeout has elapsed. A negative count means "don't block".
-constexpr std::int64_t kMaxChunkMs = 24LL * 60 * 60 * 1000;
+constexpr std::chrono::nanoseconds kMaxChunk = std::chrono::hours{24};
 
-bool to_timespec(std::optional<std::chrono::milliseconds> t, timespec& ts) noexcept {
+bool to_timespec(std::optional<std::chrono::nanoseconds> t, timespec& ts) noexcept {
     if (!t) return false;                        // nullptr timeout: wait forever
-    std::int64_t c = t->count();
-    if (c < 0) c = 0;
-    if (c > kMaxChunkMs) c = kMaxChunkMs;
-    ts.tv_sec  = static_cast<time_t>(c / 1000);
-    ts.tv_nsec = static_cast<long>((c % 1000) * 1'000'000);
+    auto c = *t;
+    if (c.count() < 0) c = std::chrono::nanoseconds{0};
+    if (c > kMaxChunk) c = kMaxChunk;
+    const auto ns = c.count();
+    ts.tv_sec  = static_cast<time_t>(ns / 1'000'000'000);
+    ts.tv_nsec = static_cast<long>(ns % 1'000'000'000);
     return true;
 }
 
@@ -190,7 +191,8 @@ std::size_t kqueue_reactor::watched() const noexcept {
         std::count_if(s_->slots.begin(), s_->slots.end(), [](auto& x) { return x.live; }));
 }
 
-result<wait_result> kqueue_reactor::wait(std::optional<std::chrono::milliseconds> timeout) {
+result<wait_result> kqueue_reactor::wait(wait_timeout wt) {
+    const std::optional<std::chrono::nanoseconds> timeout = wt.get();
     auto& s = *s_;
     struct kevent evs[33];                             // read+write per handle, + waker
     using clk = std::chrono::steady_clock;
@@ -199,15 +201,15 @@ result<wait_result> kqueue_reactor::wait(std::optional<std::chrono::milliseconds
     for (;;) {
         auto left = timeout;
         if (timeout) {
-            const auto spent = std::chrono::duration_cast<std::chrono::milliseconds>(clk::now() - start);
-            left = *timeout > spent ? *timeout - spent : std::chrono::milliseconds{0};
+            const auto spent = std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - start);
+            left = *timeout > spent ? *timeout - spent : std::chrono::nanoseconds{0};
         }
         timespec ts{};
         const bool bounded = to_timespec(left, ts);
         n = ::kevent(s.kq, nullptr, 0, evs, static_cast<int>(std::size(evs)),
                      bounded ? &ts : nullptr);
         // A chunk ran out but the caller's timeout didn't: wait again.
-        if (n == 0 && left && left->count() > kMaxChunkMs) continue;
+        if (n == 0 && left && *left > kMaxChunk) continue;
         if (n >= 0) break;
         if (errno != EINTR) return std::unexpected(error::from_errno(errno, "kevent wait"));
     }

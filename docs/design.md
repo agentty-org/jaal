@@ -515,9 +515,11 @@ Two core effects exist only because the kernel owns the thing they read:
   and re-arms from now. Catch-up storms are never what an app wants.
 - Deadlines are computed with `saturate_add`, so `after(years)` can't
   overflow.
-- When a deadline is turned into a wait timeout, it's rounded **up** (see
-  6.4). Rounding down caused a hot spin in maya: the loop woke just before
-  the timer was due, found nothing to do, and slept for 0 ms, over and over.
+- A deadline becomes a wait timeout exactly, in nanoseconds; the reactor
+  rounds it **up** to what its OS can wait (see 6.4, D46). A future
+  deadline never becomes 0. Rounding down caused a hot spin in maya: the
+  loop woke just before the timer was due, found nothing to do, and slept
+  for 0 ms, over and over.
 
 ### 4.5 Worker pool and tasks
 

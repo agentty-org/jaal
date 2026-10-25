@@ -19,6 +19,7 @@
 #include <chrono>
 #include <concepts>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <type_traits>
 #include <utility>
@@ -29,6 +30,51 @@
 namespace jaal::platform {
 
 // ── interests and readiness ─────────────────────────────────────────────
+
+/// How long a reactor wait may block: nullopt waits indefinitely.
+///
+/// Built from ANY duration, saturating. A plain optional<nanoseconds> would
+/// convert milliseconds::max() by multiplying by a million and wrap negative,
+/// turning "wait forever" into "don't wait" (the D16 bug, one layer down).
+/// Too large to say in nanoseconds means indefinitely.
+class wait_timeout {
+public:
+    constexpr wait_timeout() noexcept = default;
+    constexpr wait_timeout(std::nullopt_t) noexcept {}                     // NOLINT
+    template <class Rep, class Period>
+    constexpr wait_timeout(std::chrono::duration<Rep, Period> d) noexcept  // NOLINT
+        : ns_(saturate(d)) {}
+    template <class Rep, class Period>
+    constexpr wait_timeout(std::optional<std::chrono::duration<Rep, Period>> d) noexcept  // NOLINT
+        : ns_(d ? saturate(*d) : std::nullopt) {}
+
+    /// nullopt: block until something is ready. Otherwise >= 0.
+    [[nodiscard]] constexpr std::optional<std::chrono::nanoseconds> get() const noexcept {
+        return ns_;
+    }
+
+private:
+    template <class Rep, class Period>
+    static constexpr std::optional<std::chrono::nanoseconds>
+    saturate(std::chrono::duration<Rep, Period> d) noexcept {
+        using std::chrono::nanoseconds;
+        if (d <= d.zero()) return nanoseconds{0};
+        // d in ns is count * R::num / R::den. It fits when count is at most
+        // max * den / num; dividing first can't overflow.
+        using R = std::ratio_divide<Period, nanoseconds::period>;
+        using rep = nanoseconds::rep;
+        constexpr rep max = std::numeric_limits<rep>::max();
+        if constexpr (std::is_floating_point_v<Rep>) {
+            if (static_cast<long double>(d.count()) * R::num / R::den >=
+                static_cast<long double>(max))
+                return std::nullopt;
+        } else if constexpr (R::num > 1) {
+            if (static_cast<rep>(d.count()) > max / R::num * R::den) return std::nullopt;
+        }
+        return std::chrono::ceil<nanoseconds>(d);       // round UP (D16)
+    }
+    std::optional<std::chrono::nanoseconds> ns_;
+};
 enum class interest : std::uint8_t { read = 1, write = 2, read_write = 3 };
 
 [[nodiscard]] constexpr bool wants_read(interest i) noexcept {
@@ -63,9 +109,15 @@ struct wait_result {
 //   watch(handle, interest, token)  → registration (RAII: dropping it unwatches)
 //   reg.modify(interest)            → change what that handle waits for
 //   wake()                          → thread-safe, async-signal-safe, coalescing
-//   wait(timeout_ms)                → wait_result
+//   wait(timeout)                   → wait_result
 //
 // timeout: nullopt = wait indefinitely; 0 = poll without blocking.
+//
+// The timeout is in nanoseconds and a backend must not wake EARLY by more
+// than its OS can't avoid: a frame pacer asking for 16.67 ms must not get
+// 16 ms. Each backend uses the finest wait its OS offers (epoll_pwait2,
+// ppoll, kevent's timespec, a high-resolution waitable timer) and rounds UP
+// to it, never down (D16: rounding down is the hot-spin bug).
 //
 // modify() is on the registration because that's what owns the handle's
 // place in the reactor. It's the difference between a toy and a real socket
@@ -95,7 +147,7 @@ concept Reactor =
     && std::movable<typename R::registration>
     && !std::copyable<typename R::registration>
     && requires(R& r, const R& cr, typename R::handle h, interest i, std::uint64_t tok,
-                std::optional<std::chrono::milliseconds> t) {
+                wait_timeout t) {
         { R::create() } -> std::same_as<result<R>>;
         { r.watch(h, i, tok) } -> std::same_as<result<typename R::registration>>;
         { r.wait(t) } -> std::same_as<result<wait_result>>;

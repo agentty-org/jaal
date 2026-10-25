@@ -88,22 +88,23 @@ template <class Clock, class Rep, class Period>
     return now + dd;
 }
 
-/// Milliseconds to wait for `deadline`, rounded UP, never negative.
-/// nullopt means "no deadline: wait indefinitely".
+/// Time to wait for `deadline`, never negative. nullopt means "no deadline:
+/// wait indefinitely".
 ///
-/// Rounding DOWN caused a hot spin in maya: the loop woke just before the
-/// timer was due, found nothing ready, computed a 0 ms timeout and spun. The
-/// conversion lives in ONE place so no backend can get it wrong on its own.
+/// Exact to the nanosecond: the reactor rounds UP to whatever its OS can
+/// wait (a nanosecond for epoll_pwait2, a millisecond for poll), so a frame
+/// pacer gets 16.67 ms rather than 17. The D16 rule still holds here: a
+/// deadline in the future never becomes 0. Rounding down made maya wake
+/// just before a timer, find nothing due, compute 0 and spin.
 template <class Clock>
-[[nodiscard]] constexpr std::optional<std::chrono::milliseconds>
+[[nodiscard]] constexpr std::optional<std::chrono::nanoseconds>
 timeout_from(typename Clock::time_point now,
              std::optional<typename Clock::time_point> deadline) noexcept {
     using namespace std::chrono;
     if (!deadline) return std::nullopt;
-    if (*deadline <= now) return milliseconds{0};
-    const auto left = *deadline - now;
-    // ceil: 0.3 ms left must wait 1 ms, never 0 (the hot-spin bug).
-    return ceil<milliseconds>(left);
+    if (*deadline <= now) return nanoseconds{0};
+    // ceil: a sub-nanosecond remainder (a coarser clock rep) still waits.
+    return std::max(ceil<nanoseconds>(*deadline - now), nanoseconds{1});
 }
 
 template <class Clock, class Payload>

@@ -7,6 +7,7 @@
 #include <cerrno>
 #include <climits>
 #include <cstring>
+#include <ctime>
 #include <vector>
 
 #include <fcntl.h>
@@ -61,15 +62,41 @@ void drain_wake(const wake_fds& w) noexcept {
     while (::read(w.read, buf, sizeof buf) > 0) {}
 }
 
-// poll() takes an int. Clamp the 64-bit chrono count into [0, INT_MAX]
-// BEFORE narrowing: a raw cast of a value > INT_MAX wraps negative, and
-// poll() reads a negative timeout as "block forever" (maya hit this).
-int poll_timeout(std::optional<std::chrono::milliseconds> t) noexcept {
+// ppoll waits to the nanosecond (Linux, the BSDs, Android). The timespec
+// can't wrap: a chrono count fits a time_t of seconds.
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || \
+    defined(__NetBSD__) || defined(__ANDROID__)
+#  define JAAL_HAVE_PPOLL 1
+#endif
+
+#ifndef JAAL_HAVE_PPOLL
+// poll() takes int milliseconds: round UP (D16), then clamp into
+// [0, INT_MAX] BEFORE narrowing. A raw cast of a value > INT_MAX wraps
+// negative, and poll() reads a negative timeout as "block forever" (maya
+// hit this).
+int poll_timeout(std::optional<std::chrono::nanoseconds> t) noexcept {
     if (!t) return -1;
-    const auto c = t->count();
-    if (c <= 0) return 0;
+    if (t->count() <= 0) return 0;
+    const auto c = std::chrono::ceil<std::chrono::milliseconds>(*t).count();
     if (c >= INT_MAX) return INT_MAX;
     return static_cast<int>(c);
+}
+#endif
+
+int poll_for(pollfd* fds, nfds_t n, std::optional<std::chrono::nanoseconds> t) noexcept {
+#ifdef JAAL_HAVE_PPOLL
+    timespec ts{};
+    timespec* tp = nullptr;
+    if (t) {
+        const auto ns = t->count() > 0 ? t->count() : 0;
+        ts.tv_sec  = static_cast<time_t>(ns / 1'000'000'000);
+        ts.tv_nsec = static_cast<long>(ns % 1'000'000'000);
+        tp = &ts;
+    }
+    return ::ppoll(fds, n, tp, nullptr);
+#else
+    return ::poll(fds, n, poll_timeout(t));
+#endif
 }
 
 }  // namespace
@@ -189,7 +216,8 @@ std::size_t poll_reactor::watched() const noexcept {
         std::count_if(s_->slots.begin(), s_->slots.end(), [](auto& s) { return s.live; }));
 }
 
-result<wait_result> poll_reactor::wait(std::optional<std::chrono::milliseconds> timeout) {
+result<wait_result> poll_reactor::wait(wait_timeout wt) {
+    const std::optional<std::chrono::nanoseconds> timeout = wt.get();
     auto& pf = s_->pfds;
     auto& mp = s_->map;
     pf.clear();
@@ -212,10 +240,10 @@ result<wait_result> poll_reactor::wait(std::optional<std::chrono::milliseconds> 
     for (;;) {
         auto left = timeout;
         if (timeout) {
-            const auto spent = std::chrono::duration_cast<std::chrono::milliseconds>(clk::now() - start);
-            left = *timeout > spent ? *timeout - spent : std::chrono::milliseconds{0};
+            const auto spent = std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - start);
+            left = *timeout > spent ? *timeout - spent : std::chrono::nanoseconds{0};
         }
-        r = ::poll(pf.data(), static_cast<nfds_t>(pf.size()), poll_timeout(left));
+        r = poll_for(pf.data(), static_cast<nfds_t>(pf.size()), left);
         if (r >= 0) break;
         if (errno != EINTR) return std::unexpected(error::from_errno(errno, "poll"));
     }

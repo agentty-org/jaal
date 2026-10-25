@@ -177,23 +177,25 @@ static int timer_tests() {
     static_assert(k::saturate_cast<std::chrono::nanoseconds>(std::chrono::milliseconds(5))
                   == std::chrono::nanoseconds(5'000'000));
 
-    // timeout_from rounds UP. A deadline 0.3 ms away must wait 1 ms, never
-    // 0: rounding down made maya wake just before the timer, find nothing
-    // due, compute 0 ms, and spin.
+    // timeout_from is exact, and a deadline in the future never becomes 0:
+    // rounding down made maya wake just before the timer, find nothing due,
+    // compute 0 ms, and spin. The reactor rounds UP to what its OS can wait.
     {
         using namespace std::chrono;
         const auto t = c.now();
         auto to = k::timeout_from<sim_clock>(t, t + microseconds(300));
-        if (!to || *to != milliseconds(1)) return 33;
-        to = k::timeout_from<sim_clock>(t, t + microseconds(1500));
-        if (!to || *to != milliseconds(2)) return 34;
+        if (!to || *to != microseconds(300)) return 33;
+        to = k::timeout_from<sim_clock>(t, t + nanoseconds(16'666'667));
+        if (!to || *to != nanoseconds(16'666'667)) return 34;  // a 60 Hz frame
         to = k::timeout_from<sim_clock>(t, t + milliseconds(7));
         if (!to || *to != milliseconds(7)) return 35;          // exact stays exact
         to = k::timeout_from<sim_clock>(t, t);
-        if (!to || *to != milliseconds(0)) return 36;          // due now: don't wait
+        if (!to || *to != nanoseconds(0)) return 36;           // due now: don't wait
         to = k::timeout_from<sim_clock>(t, t - milliseconds(5));
-        if (!to || *to != milliseconds(0)) return 37;          // overdue: don't wait
+        if (!to || *to != nanoseconds(0)) return 37;           // overdue: don't wait
         if (k::timeout_from<sim_clock>(t, std::nullopt)) return 38;   // no deadline
+        to = k::timeout_from<sim_clock>(t, t + nanoseconds(1));
+        if (!to || to->count() <= 0) return 39;                // future is never 0
     }
     return 0;
 }

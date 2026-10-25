@@ -75,7 +75,7 @@ public:
     ~poll_reactor();
 
     [[nodiscard]] result<registration> watch(handle fd, interest what, std::uint64_t token);
-    [[nodiscard]] result<wait_result>  wait(std::optional<std::chrono::milliseconds> timeout);
+    [[nodiscard]] result<wait_result>  wait(wait_timeout timeout);
     [[nodiscard]] waker_ref            waker() const noexcept;
 
     /// Registered handles (not counting the waker). For tests.

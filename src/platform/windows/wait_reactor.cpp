@@ -47,13 +47,25 @@ void timer_res_release() noexcept {
 // Clamp a chrono timeout into WaitForMultipleObjects' DWORD. "No deadline"
 // and anything too big both become INFINITE. A raw cast would wrap a large
 // count to a small one, and the wait would return almost at once (maya hit
-// this as a busy poll).
-DWORD wait_ms(std::optional<std::chrono::milliseconds> t) noexcept {
+// this as a busy poll). Rounds UP (D16).
+DWORD wait_ms(std::optional<std::chrono::nanoseconds> t) noexcept {
     if (!t) return INFINITE;
-    const auto c = t->count();
-    if (c <= 0) return 0;
+    if (t->count() <= 0) return 0;
+    const auto c = std::chrono::ceil<std::chrono::milliseconds>(*t).count();
     if (c >= static_cast<long long>(INFINITE)) return INFINITE;
     return static_cast<DWORD>(c);
+}
+
+// A high-resolution waitable timer (Windows 10 1803+) fires to ~0.5 ms,
+// where a WFMO timeout lands on the 1 ms tick at best. NULL where the flag
+// isn't supported; the wait then falls back to its millisecond timeout.
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#  define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+HANDLE make_precise_timer() noexcept {
+    return ::CreateWaitableTimerExW(nullptr, nullptr,
+                                    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                    TIMER_ALL_ACCESS);
 }
 
 bool pipe_gone(DWORD e) noexcept {
@@ -160,6 +172,7 @@ struct wait_reactor::state {
     enum class kind : std::uint8_t { waitable, stream, file, pipe };
 
     HANDLE wake = nullptr;
+    HANDLE timer = nullptr;                   // precise timeouts; may be NULL
     struct slot {
         HANDLE                       h     = nullptr;
         std::uint64_t                token = 0;
@@ -177,6 +190,7 @@ struct wait_reactor::state {
     ~state() {
         slots.clear();                        // stop the pipe readers first
         if (wake) ::CloseHandle(wake);
+        if (timer) ::CloseHandle(timer);
         timer_res_release();
     }
 
@@ -251,6 +265,7 @@ result<wait_reactor> wait_reactor::create() {
                                      "CreateEventW for reactor wake"});
     auto s  = std::make_shared<state>();
     s->wake = ev;
+    s->timer = make_precise_timer();
     return wait_reactor(std::move(s));
 }
 
@@ -401,7 +416,8 @@ bool probe_pipe_write(const Slot& sl, readiness& rd) {
 
 }  // namespace
 
-result<wait_result> wait_reactor::wait(std::optional<std::chrono::milliseconds> timeout) {
+result<wait_result> wait_reactor::wait(wait_timeout wt) {
+    const std::optional<std::chrono::nanoseconds> timeout = wt.get();
     auto& s = *s_;
     using kind = state::kind;
     wait_result out;
@@ -467,17 +483,40 @@ result<wait_result> wait_reactor::wait(std::optional<std::chrono::milliseconds> 
 
     if (probe()) return out;
 
-    const DWORD total = wait_ms(timeout);
     using clk = std::chrono::steady_clock;
     const auto start = clk::now();
+    // Saturate: a timeout near nanoseconds::max() must not wrap the deadline.
+    std::optional<clk::time_point> deadline;
+    if (timeout) {
+        const auto room = clk::time_point::max() - start;
+        deadline = *timeout >= room ? clk::time_point::max() : start + *timeout;
+    }
+    auto left = [&]() -> std::optional<std::chrono::nanoseconds> {
+        if (!deadline) return std::nullopt;
+        const auto now = clk::now();
+        return now >= *deadline ? std::chrono::nanoseconds{0} : *deadline - now;
+    };
+    // With a precise timer the timer handle ends the wait; WFMO's own
+    // timeout is then a backstop one tick later, so it never fires first.
+    const bool precise = s.timer && timeout && timeout->count() > 0;
+    if (precise) {
+        LARGE_INTEGER due;   // negative = relative, in 100 ns units, rounded UP
+        const auto ns = timeout->count();
+        due.QuadPart = -static_cast<LONGLONG>(ns / 100 + (ns % 100 != 0 ? 1 : 0));
+        if (!::SetWaitableTimer(s.timer, &due, 0, nullptr, nullptr, FALSE))
+            return std::unexpected(error{std::errc::io_error,
+                                         static_cast<std::int32_t>(::GetLastError()),
+                                         "SetWaitableTimer"});
+    }
     std::vector<HANDLE> hs;
-    hs.reserve(s.slots.size() + 1);
+    hs.reserve(s.slots.size() + 2);
 
     for (;;) {
         // The wait list: the waker, every handle whose signal means
         // something for its interest, and each pipe reader that's armed.
         hs.clear();
         hs.push_back(s.wake);
+        if (precise) hs.push_back(s.timer);
         for (auto& sl : s.slots) {
             if (!sl.live) continue;
             const bool r = wants_read(sl.what);
@@ -489,11 +528,10 @@ result<wait_result> wait_reactor::wait(std::optional<std::chrono::milliseconds> 
             }
         }
 
-        DWORD slice = total;
-        if (total != INFINITE) {
-            const auto spent = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                   clk::now() - start).count();
-            slice = spent >= total ? 0 : total - static_cast<DWORD>(spent);
+        DWORD slice = wait_ms(left());
+        if (precise && slice != INFINITE) {
+            constexpr DWORD kBackstop = 2;     // the timer handle should win
+            slice = slice > INFINITE - kBackstop ? INFINITE - 1 : slice + kBackstop;
         }
         // Only a handle that can't signal is polled, and only while it can't.
         constexpr DWORD kPollQuantum = 5;
@@ -502,21 +540,21 @@ result<wait_result> wait_reactor::wait(std::optional<std::chrono::milliseconds> 
         ++s.os_waits;
         const DWORD res = ::WaitForMultipleObjects(static_cast<DWORD>(hs.size()), hs.data(),
                                                    FALSE, slice);
-        if (res == WAIT_FAILED)
-            return std::unexpected(error{std::errc::io_error,
-                                         static_cast<std::int32_t>(::GetLastError()),
-                                         "WaitForMultipleObjects"});
+        if (res == WAIT_FAILED) {
+            const auto e = static_cast<std::int32_t>(::GetLastError());
+            if (precise) ::CancelWaitableTimer(s.timer);
+            return std::unexpected(error{std::errc::io_error, e, "WaitForMultipleObjects"});
+        }
         // Whatever woke us (or not), probe each handle: WFMO only names the
         // lowest signalled index.
-        if (probe()) return out;
+        if (probe()) {
+            if (precise) ::CancelWaitableTimer(s.timer);
+            return out;
+        }
 
-        if (total != INFINITE) {
-            const auto spent = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                   clk::now() - start).count();
-            if (spent >= static_cast<long long>(total)) {
-                out.timeout = true;
-                return out;
-            }
+        if (deadline && clk::now() >= *deadline) {
+            out.timeout = true;
+            return out;
         }
     }
 }

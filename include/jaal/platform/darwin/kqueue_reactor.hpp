@@ -73,7 +73,7 @@ public:
     ~kqueue_reactor();
 
     [[nodiscard]] result<registration> watch(handle fd, interest what, std::uint64_t token);
-    [[nodiscard]] result<wait_result>  wait(std::optional<std::chrono::milliseconds> timeout);
+    [[nodiscard]] result<wait_result>  wait(wait_timeout timeout);
     [[nodiscard]] waker_ref            waker() const noexcept;
     [[nodiscard]] std::size_t          watched() const noexcept;
 

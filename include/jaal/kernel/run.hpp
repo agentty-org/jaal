@@ -40,7 +40,7 @@
 //       // again even with no model change, and wait_hint() bounds how long
 //       // the loop sleeps before that retry.
 //       bool owes_frame() const;
-//       std::optional<std::chrono::milliseconds> wait_hint() const;
+//       std::optional<std::chrono::nanoseconds> wait_hint() const;  // any duration
 //
 //       // effects/sources beyond core: handle(E), start_source/stop_source
 //
@@ -473,10 +473,9 @@ int run(H& host, run_options opt, durable<P> d) {
             k.clock().now(), k.next_deadline());
         // An owed frame is a deadline like a timer: wake for it.
         if (frame_owed && next_present) {
-            const auto until = std::chrono::ceil<std::chrono::milliseconds>(
-                *next_present - platform::steady_clock{}.now());
-            const auto w = std::max(until, std::chrono::milliseconds{0});
-            timeout = timeout ? std::min(*timeout, w) : w;
+            const auto w = kernel::timeout_from<platform::steady_clock>(
+                platform::steady_clock{}.now(), *next_present);
+            timeout = timeout ? std::min(*timeout, *w) : *w;
         }
         // The host may owe work of its own that no handle will announce: a
         // renderer that coalesced a frame (the terminal was congested) and
@@ -486,9 +485,14 @@ int run(H& host, run_options opt, durable<P> d) {
         // frame and relies on its own loop to retry within a few ms, so under
         // jaal every keystroke drew the PREVIOUS model — the owed frame sat
         // unpainted until the next event came along.
-        if constexpr (requires { { host.wait_hint() } -> std::convertible_to<std::optional<std::chrono::milliseconds>>; }) {
-            if (const std::optional<std::chrono::milliseconds> h = host.wait_hint())
-                timeout = timeout ? std::min(*timeout, *h) : *h;
+        //
+        // Any duration works (milliseconds, or nanoseconds for a frame pacer).
+        if constexpr (requires { host.wait_hint(); }) {
+            if (const auto h = host.wait_hint()) {
+                const auto ns = std::max(std::chrono::ceil<std::chrono::nanoseconds>(*h),
+                                         std::chrono::nanoseconds{0});
+                timeout = timeout ? std::min(*timeout, ns) : ns;
+            }
         }
         auto res = reactor->wait(timeout);
         if (!res) {
