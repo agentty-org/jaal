@@ -98,8 +98,24 @@ if(UNIX)
         target_link_libraries(jaal_no_pidfd_shim PRIVATE ${CMAKE_DL_LIBS})
         add_test(NAME platform_process_conformance_no_pidfd
                  COMMAND platform_process_conformance)
+        # Under ASan the runtime must be first in the initial library list,
+        # ahead of any LD_PRELOAD; ask the compiler where it lives.
+        set(_no_pidfd_preload "$<TARGET_FILE:jaal_no_pidfd_shim>")
+        if(CMAKE_CXX_FLAGS MATCHES "-fsanitize=[^ ]*address")
+            execute_process(
+                COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=libasan.so
+                OUTPUT_VARIABLE _asan_rt OUTPUT_STRIP_TRAILING_WHITESPACE)
+            if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+                execute_process(
+                    COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=libclang_rt.asan-x86_64.so
+                    OUTPUT_VARIABLE _asan_rt OUTPUT_STRIP_TRAILING_WHITESPACE)
+            endif()
+            if(EXISTS "${_asan_rt}")
+                set(_no_pidfd_preload "${_asan_rt}:${_no_pidfd_preload}")
+            endif()
+        endif()
         set_tests_properties(platform_process_conformance_no_pidfd PROPERTIES
-            ENVIRONMENT "LD_PRELOAD=$<TARGET_FILE:jaal_no_pidfd_shim>;JAAL_EXPECT_NO_PIDFD=1")
+            ENVIRONMENT "LD_PRELOAD=${_no_pidfd_preload};JAAL_EXPECT_NO_PIDFD=1")
         add_dependencies(platform_process_conformance jaal_no_pidfd_shim)
     endif()
     # The cross-process critical section. Checks 9-13 FORK, because the only
@@ -248,7 +264,7 @@ jaal_compile_fail(NAME sink_box_no_upgrade   SOURCE compile_fail/sink.cpp CASE 3
 jaal_compile_fail(NAME handle_no_copy       SOURCE compile_fail/handle.cpp CASE 1
                   MATCH "deleted (function|constructor)[^\n]*owned_handle")
 jaal_compile_fail(NAME handle_no_copy_assign SOURCE compile_fail/handle.cpp CASE 2
-                  MATCH "deleted[^\n]*operator=|use of deleted function")
+                  MATCH "deleted[^\n]*operator ?'?=|use of deleted function")
 jaal_compile_fail(NAME handle_no_implicit_move SOURCE compile_fail/handle.cpp CASE 3
                   MATCH "deleted (function|constructor)|no (known conversion|matching function)")
 jaal_compile_fail(NAME handle_no_adopt_int  SOURCE compile_fail/handle.cpp CASE 4
@@ -269,7 +285,7 @@ jaal_compile_fail(NAME handle_owner_not_borrow SOURCE compile_fail/handle.cpp CA
 # key's ctor is private so only the kernel and the checked on_loop() can mint
 # one, and a token can't be copied or moved out.
 jaal_compile_fail(NAME loop_bound_needs_token   SOURCE compile_fail/loop_bound.cpp CASE 1
-                  MATCH "no matching function|too few arguments")
+                  MATCH "no matching (member )?function|too few arguments")
 jaal_compile_fail(NAME loop_token_not_forgeable SOURCE compile_fail/loop_bound.cpp CASE 2
                   MATCH "converting to .*loop_key|no matching function|explicit")
 # CASE 3 is the forge that USED to compile: loop_key's ctor was public, so
