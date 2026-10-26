@@ -15,6 +15,11 @@
 #   loop_key                         only the kernel mints loop tokens
 #   cap_access:: / thread_root(      only jaal mints lock capabilities
 #                                    (core/capability.hpp)
+#   std::call_once / std::future     use jaal::once / jaal::wait: those need
+#   / atomic .wait(                  `unlocked`, so a wait under a lock fails
+#                                    to compile (kernel/waits_for.hpp)
+#   arm_key_access / for_tests()     only the kernel arms a loop thread; a test
+#                                    may, by name (kernel/loop.hpp)
 #
 # The allowlist is the list of files a human checked by hand: jaal's own
 # kernel/platform code, where these ARE the implementation. Each entry says
@@ -46,7 +51,15 @@ set(ban_sink_access "sink_access")
 set(ban_loop_key    "loop_key")
 # `[(]`, not `\\(`: MSYS grep's argv parsing eats the backslash.
 set(ban_cap_mint    "cap_access::|thread_root[(]")
-set(ban_names thread detach async mutex atomic thread_local const_cast sink_access loop_key cap_mint)
+set(ban_call_once   "std::call_once")
+# A future's get()/wait() blocks; holding one is how a file reaches them.
+set(ban_future      "std::(shared_)?future<")
+# atomic::wait(old, order) or atomic<bool>::wait(true|false). A reactor's
+# wait(timeout) has neither shape. Same rule hidden_locks.py used.
+set(ban_atomic_wait "(\\.|->)wait[(]([^,()]+, *std::memory_order[_a-z:]*|true|false)[)]")
+set(ban_loop_arm    "arm_key_access|loop_identity::for_tests|arm_loop_for_tests")
+set(ban_names thread detach async mutex atomic thread_local const_cast sink_access loop_key cap_mint
+              call_once future atomic_wait loop_arm)
 
 # Parse the allowlist.
 file(STRINGS ${ALLOW} allow_lines)

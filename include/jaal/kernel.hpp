@@ -31,6 +31,7 @@
 #include "kernel/strays.hpp"
 #include "kernel/worker_group.hpp"
 #include "kernel/waits.hpp"
+#include "kernel/waits_for.hpp"
 #include "kernel/replay.hpp"
 #include "kernel/run.hpp"
 #include "kernel/scope.hpp"

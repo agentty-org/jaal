@@ -282,7 +282,7 @@ int main() {
         // with() and the check passes. Off the loop there is no token to be
         // had and with() aborts rather than quietly returning a different
         // thread's value.
-        jaal::kernel::loop_identity arm;
+        const auto arm = jaal::kernel::loop_identity::for_tests();
 
         jaal::kernel::loop_bound<int> state{41};
         state.with([](int& v) { v += 1; });

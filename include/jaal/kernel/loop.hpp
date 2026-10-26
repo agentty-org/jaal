@@ -130,15 +130,28 @@ public:
     loop_token& operator=(loop_token&&)      = delete;
 };
 
+namespace loop_detail {
+/// The kernel's key for arming a thread. Its constructor is private and only
+/// arm_key_access (named in the banlist) makes one.
+class arm_key {
+    arm_key() = default;
+    friend struct arm_key_access;
+};
+struct arm_key_access { static arm_key make() noexcept { return {}; } };
+}  // namespace loop_detail
+
 /// Arms the calling thread as a loop thread for its lifetime. The kernel
-/// holds one around its fold; nothing else should need to.
+/// holds one; nothing else may make one, because arming a worker would let
+/// it read loop-bound state. A test that drives view code with no kernel
+/// asks for one BY NAME (for_tests()), which the banlist flags anywhere but
+/// a test.
 ///
 /// RAII so an exception escaping a fold still disarms: an aborted step that
 /// left the identity armed would let the next user of this thread — a pool
 /// worker, once the kernel is gone — pass the on_loop() check.
 class loop_identity {
 public:
-    loop_identity() noexcept { ++loop_detail::armed_depth(); }
+    explicit loop_identity(loop_detail::arm_key) noexcept { ++loop_detail::armed_depth(); }
     ~loop_identity() { --loop_detail::armed_depth(); }
 
     loop_identity(const loop_identity&)            = delete;
@@ -146,10 +159,10 @@ public:
     loop_identity& operator=(const loop_identity&) = delete;
     loop_identity& operator=(loop_identity&&)      = delete;
 
-    /// Mint proof directly. For the kernel's own code, which is already
-    /// inside the armed region and need not re-check.
-    [[nodiscard]] static loop_token token() noexcept {
-        return loop_token{loop_detail::minter::key()};
+    /// A test's stand-in for a kernel: arms this thread until it goes out of
+    /// scope. Guaranteed copy elision returns it in place.
+    [[nodiscard]] static loop_identity for_tests() noexcept {
+        return loop_identity{loop_detail::arm_key_access::make()};
     }
 };
 
@@ -205,7 +218,7 @@ decltype(auto) on_loop(F&& f) {
             "is mutated or evicted — these are usually caches.");
     }
     if (!loop_detail::on_loop_thread()) loop_detail::off_loop_abort("on_loop");
-    const loop_token tok = loop_identity::token();
+    const loop_token tok{loop_detail::minter::key()};
     return std::forward<F>(f)(tok);
 }
 

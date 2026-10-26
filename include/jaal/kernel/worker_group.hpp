@@ -66,3 +66,5 @@ class worker_group {
 
 // ~worker_group waits for every job: never owned by a guarded<T>.
 template <> inline constexpr bool jaal::joins_on_destroy<jaal::kernel::worker_group> = true;
+// post() and stop() go through the pool's lock: safe from any thread.
+template <> inline constexpr bool jaal::sync_opt_in<jaal::kernel::worker_group> = true;

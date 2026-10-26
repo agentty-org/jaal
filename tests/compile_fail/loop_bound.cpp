@@ -88,4 +88,12 @@ int main() {
     auto body = [](Sink<Msg>, std::stop_token, kernel::loop_bound<int>) {};
     return C::task(body, kernel::loop_bound<int>{3}), 0;
 }
+
+#elif JAAL_CASE == 8
+// Arming a worker as the loop. Only the kernel holds the key; anything else
+// asks for for_tests() by name, which the banlist refuses outside tests.
+int main() {
+    kernel::loop_identity arm;
+    return 0;
+}
 #endif

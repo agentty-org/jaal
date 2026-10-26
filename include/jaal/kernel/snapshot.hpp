@@ -81,9 +81,9 @@ public:
         static_assert(std::is_same_v<std::remove_cvref_t<std::invoke_result_t<F&, const T&, const Args&...>>, T>,
                       "jaal::snapshot::update: the function is T(const T& old, const Args&...)");
         for (;;) {
-            const std::shared_ptr<cell> old = cur();
+            const std::shared_ptr<const cell> old = cur();
             const T& before = old->get();
-            std::shared_ptr<cell> next = box(f(before, std::as_const(args)...));
+            std::shared_ptr<const cell> next = box(f(before, std::as_const(args)...));
             if (slot_.publish_if(old, next)) return *next;
         }
     }
@@ -91,14 +91,14 @@ public:
 private:
     using cell = shared<T>;   // the published object is the shared handle itself
 
-    static std::shared_ptr<cell> box(T v) {
-        return std::make_shared<cell>(cell::make(std::move(v)));
+    static std::shared_ptr<const cell> box(T v) {
+        return std::make_shared<const cell>(cell::make(std::move(v)));
     }
-    static std::shared_ptr<cell> make(T v) { return box(std::move(v)); }
+    static std::shared_ptr<const cell> make(T v) { return box(std::move(v)); }
 
-    std::shared_ptr<cell> cur() const noexcept { return slot_.current(); }
+    std::shared_ptr<const cell> cur() const noexcept { return slot_.current(); }
 
-    kernel::published<cell> slot_;
+    kernel::published<const cell> slot_;
 };
 
 // A process-wide slot, not a value to move around; every access is atomic.

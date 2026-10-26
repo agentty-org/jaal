@@ -243,6 +243,29 @@ public:
         return {detail::guard::call<F, held_cap, T&>(f, value_, args...), ok};
     }
 
+    /// Run a callback whose type a LIBRARY fixed (a `std::function<void(T&)>`
+    /// an interface hands us) under the lock. The callback is borrowed, not
+    /// moved, and runs before this returns, so the borrow can't outlive the
+    /// frame; the same reasoning that lets parallel_for borrow its body. It
+    /// may capture anything, which is why this exists at all: the library
+    /// chose the shape. What it must NOT do is take a lock or block; the
+    /// capability proves the caller's order, and inside the body held_top()
+    /// still catches a jaal wait or a lock out of rank at runtime.
+    ///
+    /// Prefer with(): a captureless body is checked by the compiler. Use this
+    /// only at an interface boundary you don't own, and say so there.
+    template <class F>
+        requires std::invocable<F&, T&>
+    void with_foreign(const below<R>&, F& f) {
+        static_assert(std::is_void_v<std::invoke_result_t<F&, T&>>,
+                      "jaal: guarded::with_foreign returns nothing: copy out through "
+                      "the callback's own captures, where the library expects it");
+        detail::guard::hold<R::value> h;
+        std::unique_lock lk(m_);
+        Notify on_exit{*this};
+        f(value_);
+    }
+
     /// Non-blocking forms: run the body only if the lock is free right now,
     /// else return nullopt. For a reader that must never stall (a status
     /// line drawn every frame). The body must return a value.

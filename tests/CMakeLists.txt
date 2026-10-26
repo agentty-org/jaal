@@ -303,6 +303,9 @@ jaal_compile_fail(NAME loop_bound_no_escape     SOURCE compile_fail/loop_bound.c
 # A loop_bound is pinned to one thread, so it must not ride into a worker.
 jaal_compile_fail(NAME loop_bound_not_sendable  SOURCE compile_fail/loop_bound.cpp CASE 7
                   MATCH "not Sendable|thread-bound")
+# Only the kernel arms a thread as the loop (it holds the key).
+jaal_compile_fail(NAME loop_identity_needs_key  SOURCE compile_fail/loop_bound.cpp CASE 8
+                  MATCH "no matching function|arm_key")
 
 # scope / guarded
 jaal_compile_fail(NAME guarded_no_escape  SOURCE compile_fail/scope.cpp CASE 1
@@ -367,6 +370,20 @@ jaal_compile_fail(NAME cap_stop_group_under_lock SOURCE compile_fail/capability.
                   MATCH "held<jaal::detail::cap::nothing>|unlocked")
 jaal_compile_fail(NAME cap_stop_group_wait_under_lock SOURCE compile_fail/capability.cpp CASE 18
                   MATCH "held<jaal::detail::cap::nothing>|unlocked")
+# The std waits behind jaal's types (kernel/waits_for.hpp, pool's job_result).
+jaal_compile_fail(NAME cap_job_result_under_lock SOURCE compile_fail/capability.cpp CASE 19
+                  MATCH "held<jaal::detail::cap::nothing>|unlocked")
+jaal_compile_fail(NAME cap_job_result_raw_get    SOURCE compile_fail/capability.cpp CASE 20
+                  MATCH "no matching (member )?function|too few arguments")
+jaal_compile_fail(NAME cap_atomic_wait_under_lock SOURCE compile_fail/capability.cpp CASE 21
+                  MATCH "held<jaal::detail::cap::nothing>|unlocked")
+jaal_compile_fail(NAME cap_foreign_out_of_order  SOURCE compile_fail/capability.cpp CASE 22
+                  MATCH "below<[^\n]*test.outer|below<rank<10")
+# published<T> checks what it hands out: Sync for T, Frozen for const T.
+jaal_compile_fail(NAME published_needs_sync      SOURCE compile_fail/capability.cpp CASE 23
+                  MATCH "T must be Sync")
+jaal_compile_fail(NAME published_const_needs_frozen SOURCE compile_fail/capability.cpp CASE 24
+                  MATCH "T must be Frozen")
 
 # kernel / hosts
 jaal_compile_fail(NAME on_event_not_sent SOURCE compile_fail/kernel.cpp CASE 1

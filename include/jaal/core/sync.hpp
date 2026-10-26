@@ -104,6 +104,44 @@ using sync_run = walk::run<sync_policy, std::remove_cv_t<T>>;
 template <class T>
 concept Sync = std::is_object_v<T> && detail::sync_run<T>::ok;
 
+// Safe for many threads to use through a `const T&` at once: what const
+// access can't change (plain fields) must be Frozen, and what it can (a
+// `mutable` field) must be Sync. A struct of read-only data plus a mutable
+// atomic counter is the case this exists for; a Frozen T always passes.
+namespace detail {
+struct const_sync_policy {
+    // mutable fields keep frozen.hpp's marker so they can be told apart
+    template <class T>
+    using field_list = meta::transform_t<frozen_field, meta::fields_t<T>>;
+
+    template <class T>
+    static consteval auto classify() {
+        namespace d = walk::decision;
+        namespace s = stdshape;
+        using U = std::remove_cv_t<T>;
+        using S = s::shape_t<U>;
+        if constexpr (is_mutable_marker_v<U>)
+            return std::conditional_t<Sync<std::remove_cv_t<typename unmark<U>::type>>,
+                                      d::accept, d::reject>{};
+        else if constexpr (Frozen<U>)                       return d::accept{};
+        // A shared owner hands every reader the same pointee, which another
+        // holder may change: it must be Sync.
+        else if constexpr (s::is_shared_shape<S>)
+            return std::conditional_t<Sync<std::remove_cv_t<typename U::element_type>>,
+                                      d::accept, d::reject>{};
+        // Owning containers and unique_ptr: const access reaches the elements.
+        else if constexpr (s::is_owns_shape<S> || s::is_unique_shape<S> || s::is_value_of_shape<S>)
+            return typename s::elements<S>::template as<d::into>{};
+        else if constexpr (meta::aggregate_struct<U>)       return d::structural{};
+        else                                                return d::reject{};
+    }
+};
+}  // namespace detail
+
+template <class T>
+concept ConstSync = std::is_object_v<T>
+    && detail::walk::run<detail::const_sync_policy, std::remove_cv_t<T>>::ok;
+
 /// The innermost field type that makes T not Sync; void if T is Sync.
 template <class T>
 using sync_culprit_t = typename detail::sync_run<T>::culprit;

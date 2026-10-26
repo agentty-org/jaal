@@ -66,6 +66,7 @@
 #include <stop_token>
 
 #include "../core/capability.hpp"
+#include "../core/sync.hpp"
 #include "strays.hpp"
 
 namespace jaal::kernel {
@@ -194,3 +195,7 @@ class stop_group {
 };
 
 }  // namespace jaal::kernel
+
+// join(), request_stop() and stop_and_wait() all go through the core's lock
+// (or its stop_source, which is thread-safe), so many threads may use one.
+template <> inline constexpr bool jaal::sync_opt_in<jaal::kernel::stop_group> = true;

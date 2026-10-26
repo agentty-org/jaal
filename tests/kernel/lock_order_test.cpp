@@ -135,7 +135,7 @@ int main() {
             auto fut = p.submit([](const jaal::unlocked& job_cap, std::stop_token, int add) {
                 return mid.with(job_cap, [](int& m, int a) { return m += a; }, add);
             }, 100);
-            ok(fut.get() >= 100, "5b: submit with a capability-taking body");
+            ok(fut.get(cap) >= 100, "5b: submit with a capability-taking body");
             (void)p.shutdown(cap, jaal::kernel::pool::no_deadline);
         }
 
@@ -143,7 +143,7 @@ int main() {
         {
             jaal::kernel::pool p{1};
             auto fut = p.submit([](std::stop_token, int x) { return x * 2; }, 21);
-            ok(fut.get() == 42, "6: plain job body");
+            ok(fut.get(cap) == 42, "6: plain job body");
             (void)p.shutdown(cap);
         }
 
@@ -198,7 +198,7 @@ int main() {
                 catch (const jaal::lock_order_error&) { return true; }
                 return false;
             });
-            ok(fut.get(), "11: pool::shutdown from its own job throws");
+            ok(fut.get(cap), "11: pool::shutdown from its own job throws");
             (void)p->shutdown(cap, jaal::kernel::pool::no_deadline);
         }
         return 0;

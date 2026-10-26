@@ -25,6 +25,7 @@
 #include <deque>
 #include <exception>
 #include <expected>
+#include <filesystem>
 #include <forward_list>
 #include <functional>
 #include <list>
@@ -111,6 +112,8 @@ template <class T> struct shape_of<std::default_delete<T>> { using type = value;
 template <> struct shape_of<std::monostate>                { using type = value; };
 template <> struct shape_of<std::nullopt_t>                { using type = value; };
 template <> struct shape_of<std::nullptr_t>                { using type = value; };
+// One owned string in its native form; nothing borrowed, nothing shared.
+template <> struct shape_of<std::filesystem::path>         { using type = value; };
 
 // std::stop_token is a shared handle to a stop state, built to be used from
 // many threads at once (its operations are thread-safe by specification).

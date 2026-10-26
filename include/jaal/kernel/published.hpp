@@ -9,8 +9,11 @@
 // guarded<T> refuses that shape, rightly: a std::shared_ptr is a SHARED
 // owner, so handing one out of a lock shares state past the lock. That is
 // exactly what this pattern wants, and it is safe only when the pointee
-// guards itself. published<T> is that pattern, named, with the condition
-// stated where it is used:
+// guards itself. published<T> is that pattern, named, and the condition is
+// CHECKED: a published<const T> needs Frozen<T> (readers can't change it),
+// a published<T> needs Sync<T> (T synchronises its own writes). A type jaal
+// can't see inside opts in with jaal::sync_opt_in / frozen_opt_in, which is
+// a claim a human made and a grep can find.
 //
 //   jaal::kernel::published<Pool> pool;          // Pool synchronises itself
 //   pool.publish(std::make_shared<Pool>(...));   // writer
@@ -33,6 +36,7 @@
 #include <utility>
 #include <version>
 
+#include "../core/frozen.hpp"
 #include "../core/sendable.hpp"
 #include "../core/sync.hpp"
 
@@ -56,6 +60,26 @@ namespace jaal::kernel {
 template <class T>
 class published {
 public:
+    /// The condition, checked on the first publish rather than at the class
+    /// so a slot can name a type that is still incomplete where it is
+    /// declared (snapshot's cell, a Pool that holds its own published<>).
+    static consteval void require_shareable() {
+        using U = std::remove_cv_t<T>;
+        if constexpr (std::is_const_v<T>) {
+            // Readers get const access. Fine when nothing changes through it
+            // (Frozen), or when only synchronised `mutable` fields do
+            // (ConstSync: read-only data plus an atomic counter).
+            if constexpr (!ConstSync<U>)
+                static_assert(ConstSync<U>,
+                    "jaal: published<const T> hands the same T to many threads; T must be "
+                    "Frozen, its mutable fields Sync (see jaal::frozen_reason<T>()), or opt "
+                    "in with frozen_opt_in");
+        } else if constexpr (!Sync<U>) {
+            static_assert(Sync<U>,
+                "jaal: published<T> hands the same T& to many threads; T must be Sync "
+                "(see jaal::sync_reason<T>()), or opt in with sync_opt_in");
+        }
+    }
     published() = default;
     published(const published&)            = delete;
     published& operator=(const published&) = delete;
@@ -63,6 +87,7 @@ public:
     /// Make `next` the current object. Readers that already hold the old
     /// one keep it until they drop it.
     void publish(std::shared_ptr<T> next) noexcept {
+        require_shareable();
 #if JAAL_ATOMIC_SHARED_PTR
         slot_.store(std::move(next), std::memory_order_release);
 #else
@@ -78,6 +103,7 @@ public:
     /// Use it when destroying the old one blocks (it joins threads) and this
     /// runs under a guarded: hold the result and let it go after the lock.
     [[nodiscard]] std::shared_ptr<T> replace(std::shared_ptr<T> next) noexcept {
+        require_shareable();
 #if JAAL_ATOMIC_SHARED_PTR
         return slot_.exchange(std::move(next), std::memory_order_acq_rel);
 #else
@@ -91,6 +117,7 @@ public:
     /// rebuild can re-check against what that writer published.
     [[nodiscard]] bool publish_if(const std::shared_ptr<T>& expected,
                                   std::shared_ptr<T> next) noexcept {
+        require_shareable();
 #if JAAL_ATOMIC_SHARED_PTR
         auto e = expected;
         return slot_.compare_exchange_strong(e, std::move(next),

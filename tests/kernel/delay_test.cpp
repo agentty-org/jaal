@@ -170,15 +170,15 @@ static int run(const jaal::unlocked& cap) {
     {
         jaal::kernel::pool p;
         auto v = p.submit([](std::stop_token, int x) { return x + 1; }, 41);
-        ok(v.get() == 42, "submit returns the body's value");
+        ok(v.get(cap) == 42, "submit returns the body's value");
 
         auto bad = p.submit([](std::stop_token) -> int { throw std::runtime_error("nope"); });
         bool threw = false;
-        try { (void)bad.get(); } catch (const std::runtime_error&) { threw = true; }
+        try { (void)bad.get(cap); } catch (const std::runtime_error&) { threw = true; }
         ok(threw, "a throwing body surfaces at get(), not at on_error");
 
         auto nothing = p.submit([](std::stop_token) {});          // void body
-        nothing.get();
+        nothing.get(cap);
         ok(true, "a void body round-trips");
     }
 
@@ -189,7 +189,7 @@ static int run(const jaal::unlocked& cap) {
         (void)p.shutdown(cap);
         auto fut   = p.submit([](std::stop_token) { return 1; });
         bool threw = false;
-        try { (void)fut.get(); } catch (const std::future_error&) { threw = true; }
+        try { (void)fut.get(cap); } catch (const std::future_error&) { threw = true; }
         ok(threw, "a dropped job breaks its promise instead of hanging get()");
     }
 

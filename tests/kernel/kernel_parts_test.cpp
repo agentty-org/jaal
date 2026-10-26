@@ -271,12 +271,15 @@ int main() {
     // Arm this thread the way the kernel arms its own, then the loop-bound
     // accessors work. There is no longer a way to get a token WITHOUT being
     // on an armed thread, which is the point.
-    k::loop_identity arm;
+    const auto arm = k::loop_identity::for_tests();
     k::loop_bound<std::string> state("hi");
-    const k::loop_token tok = k::loop_identity::token();
-    if (state.get(tok) != "hi") return 50;
-    state.with(tok, [](std::string& s) { s += "!"; });
-    if (state.get(tok) != "hi!") return 51;
+    const int bad = k::on_loop([&](const k::loop_token& tok) {
+        if (state.get(tok) != "hi") return 50;
+        state.with(tok, [](std::string& s) { s += "!"; });
+        if (state.get(tok) != "hi!") return 51;
+        return 0;
+    });
+    if (bad) return bad;
     // The token-free form checks the thread for itself.
     state.with([](std::string& s) { s += "?"; });
     if (state.with([](const std::string& s) { return s; }) != "hi!?") return 52;

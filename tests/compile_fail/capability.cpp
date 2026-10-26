@@ -5,8 +5,10 @@
 #include <jaal/kernel/delay.hpp>
 #include <jaal/kernel/guarded.hpp>
 #include <jaal/kernel/pool.hpp>
+#include <jaal/kernel/published.hpp>
 #include <jaal/kernel/scope.hpp>
 #include <jaal/kernel/stop_group.hpp>
+#include <jaal/kernel/waits_for.hpp>
 #include <jaal/kernel/worker_group.hpp>
 
 #include <chrono>
@@ -122,6 +124,41 @@ jaal::kernel::stop_group g;
 void f(const jaal::unlocked& cap) {
     outer.with(cap, [](const jaal::held<outer_rank>& h, int&) { g.wait(h); });
 }
+#elif JAAL_CASE == 19
+// collecting a pool job's result while holding a lock the job may need
+int collect(const jaal::held<outer_rank>& h, jaal::kernel::job_result<int>& r) {
+    return r.get(h);
+}
+#elif JAAL_CASE == 20
+// a raw future.get() is not reachable from a job result at all
+int f(jaal::kernel::job_result<int>& r) { return r.get(); }
+#elif JAAL_CASE == 21
+// an atomic wait (a hand-made lock) under a guarded lock
+std::atomic<bool> busy{false};
+void f(const jaal::unlocked& cap) {
+    outer.with(cap, [](const jaal::held<outer_rank>& h, int&) {
+        jaal::atomic_wait(h, busy, true);
+    });
+}
+#elif JAAL_CASE == 22
+// with_foreign is still rank-checked: a borrowed callback can't take a lock
+// out of order either
+void f(const jaal::unlocked& cap) {
+    inner.with(cap, [](const jaal::held<inner_rank>& h, int&) {
+        auto cb = [](int&) {};
+        outer.with_foreign(h, cb);
+    });
+}
+#elif JAAL_CASE == 23
+// publishing a type many threads would write without synchronising
+struct Counter { int n = 0; };
+jaal::kernel::published<Counter> slot;
+void f() { slot.publish(std::make_shared<Counter>()); }
+#elif JAAL_CASE == 24
+// publishing a const type with a mutable member: readers would race on it
+struct Cache { mutable int hits = 0; };
+jaal::kernel::published<const Cache> slot;
+void f() { slot.publish(std::make_shared<const Cache>()); }
 #else
 #  error "unknown JAAL_CASE"
 #endif

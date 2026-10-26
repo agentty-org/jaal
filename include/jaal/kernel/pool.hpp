@@ -54,6 +54,7 @@
 #include <vector>
 
 #include "../core/sendable.hpp"
+#include "../core/sync.hpp"
 #include "../core/unique_function.hpp"
 #include "../core/capability.hpp"
 #include "lock_order.hpp"
@@ -137,6 +138,39 @@ template <class F, class... Args>
 consteval void require_job() {
     if constexpr (!CheckedJob<F, Args...>) detail_pool::explain<F, Args...>();
 }
+
+/// What submit() returns: the job's eventual result. Reading it blocks, so
+/// both readers take `unlocked`: a wait for a job under a lock doesn't
+/// compile, and a forged capability aborts at the call. Dropping one
+/// abandons the result; the job still runs and shutdown still waits for it.
+template <class R>
+class job_result {
+public:
+    job_result() = default;
+    explicit job_result(std::future<R> f) noexcept : f_(std::move(f)) {}
+    job_result(job_result&&) noexcept            = default;
+    job_result& operator=(job_result&&) noexcept = default;
+
+    /// Wait for the job and take its result (or rethrow what it threw).
+    R get(const unlocked&) {
+        detail::cap::require_unlocked("jaal::job_result::get");
+        return f_.get();
+    }
+    /// Wait up to `d`. True when the result is ready.
+    template <class Rep, class Period>
+    [[nodiscard]] bool wait_for(const unlocked&, std::chrono::duration<Rep, Period> d) const {
+        detail::cap::require_unlocked("jaal::job_result::wait_for");
+        return f_.wait_for(d) == std::future_status::ready;
+    }
+    /// Non-blocking: has it finished? Needs nothing.
+    [[nodiscard]] bool ready() const {
+        return f_.valid() && f_.wait_for(std::chrono::seconds{0}) == std::future_status::ready;
+    }
+    [[nodiscard]] bool valid() const noexcept { return f_.valid(); }
+
+private:
+    std::future<R> f_;
+};
 
 class pool {
 public:
@@ -453,7 +487,7 @@ private:
     auto submit_impl(bool isolated, F body, Args... args) {
         if constexpr (!CheckedJob<F, Args...>) {
             detail_pool::explain<F, Args...>();
-            return std::future<void>{};
+            return job_result<void>{};
         } else {
             using R = job_result_t<F, Args...>;
             detail_pool::job_fn_t<F, Args...> fp = body;
@@ -481,7 +515,7 @@ private:
             };
             if (isolated) post_isolated_job(std::move(j));
             else          post_job(std::move(j));
-            return fut;
+            return job_result<R>{std::move(fut)};
         }
     }
 
@@ -577,3 +611,5 @@ struct pool_access {
 
 // ~pool waits (bounded) for its workers: never owned by a guarded<T>.
 template <> inline constexpr bool jaal::joins_on_destroy<jaal::kernel::pool> = true;
+// Every member takes the core's lock, so many threads may post to one pool.
+template <> inline constexpr bool jaal::sync_opt_in<jaal::kernel::pool> = true;

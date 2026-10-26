@@ -136,26 +136,28 @@ int main() {
     // The storage half works without any kernel at all, as long as proof
     // comes from an armed identity. This is also the kernel's own path.
     {
-        loop_identity arm;                  // pretend to be the loop
+        const auto arm = loop_identity::for_tests();   // pretend to be the loop
         loop_bound<int> state{41};
-        const loop_token tok = loop_identity::token();
-
-        if (state.get(tok) != 41) return 1;
-        state.get(tok) = 42;
-        if (state.get(tok) != 42) return 2;
-
-        const auto& cstate = state;
-        if (cstate.get(tok) != 42) return 3;
-
-        state.with(tok, [](int& v) { v += 10; });
-        if (state.get(tok) != 52) return 4;
-
-        // The token-free form, which checks for itself.
-        state.with([](int& v) { v += 1; });
-        if (state.get(tok) != 53) return 5;
-
         loop_bound<std::pair<int, int>> pair_state{std::pair{1, 2}};
-        if (pair_state.get(tok).second != 2) return 6;
+        const int bad = jaal::kernel::on_loop([&](const loop_token& tok) {
+            if (state.get(tok) != 41) return 1;
+            state.get(tok) = 42;
+            if (state.get(tok) != 42) return 2;
+
+            const auto& cstate = state;
+            if (cstate.get(tok) != 42) return 3;
+
+            state.with(tok, [](int& v) { v += 10; });
+            if (state.get(tok) != 52) return 4;
+
+            // The token-free form, which checks for itself.
+            state.with([](int& v) { v += 1; });
+            if (state.get(tok) != 53) return 5;
+
+            if (pair_state.get(tok).second != 2) return 6;
+            return 0;
+        });
+        if (bad) return bad;
 
         if (!jaal::kernel::on_loop()) return 7;
     }

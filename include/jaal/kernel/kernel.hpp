@@ -1335,7 +1335,7 @@ private:
     // Declared LAST among the members that matter so it is destroyed first,
     // but after shutdown(): ~kernel runs shutdown() in its body, which joins
     // the pool and may still fold, and that work must stay on-loop.
-    loop_identity loop_id_{};
+    loop_identity loop_id_{loop_detail::arm_key_access::make()};
     std::vector<queued> fired_;
     std::uint64_t       folds_      = 0;
     std::uint64_t       faults_     = 0;

@@ -95,7 +95,7 @@ static int run(const jaal::unlocked& cap) {
     {
         jaal::kernel::pool p(2);
         auto f = p.submit([](std::stop_token) {});
-        f.get();
+        f.get(cap);
         ok(p.shutdown(cap, 1s) == 0, "4. a clean shutdown abandons nothing");
         ok(jaal::strays() == 0, "4. and counts nothing");
     }
