@@ -162,4 +162,29 @@ template <class T> inline constexpr bool is_shared_shape<shared_owner<T>> = true
 template <class S> inline constexpr bool is_unique_shape = false;
 template <class P, class D> inline constexpr bool is_unique_shape<unique_owner<P, D>> = true;
 
+// ── a class that IS a std::variant ──────────────────────────────────────
+// `struct Msg : std::variant<...> { using variant::variant; };` gives the
+// type a short name (an alias spells every alternative into each symbol
+// and RTTI name that mentions it). variant_base_t<T> is that base, or void.
+// Only when T adds no state of its own, so treating T as the base is exact.
+template <class... A> std::variant<A...> variant_base_probe(const std::variant<A...>&);
+
+template <class T> struct variant_base { using type = void; };
+template <class T>
+    requires requires { stdshape::variant_base_probe(std::declval<const T&>()); }
+struct variant_base<T> {
+    using base = decltype(stdshape::variant_base_probe(std::declval<const T&>()));
+    using type = std::conditional_t<sizeof(T) == sizeof(base), base, void>;
+};
+template <class T> using variant_base_t = typename variant_base<T>::type;
+
+/// T is a class derived from a std::variant (not the variant itself).
+template <class T>
+concept derived_variant = !std::is_void_v<variant_base_t<T>>
+                          && !std::is_same_v<variant_base_t<T>, T>;
+
+// A derived variant has the shape of its base.
+template <derived_variant T>
+struct shape_of<T> : shape_of<variant_base_t<T>> {};
+
 }  // namespace jaal::detail::stdshape

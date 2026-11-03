@@ -59,6 +59,8 @@ namespace detail::childx {
 template <class V, class T> struct is_alt : std::false_type {};
 template <class... Ts, class T>
 struct is_alt<std::variant<Ts...>, T> : std::bool_constant<(std::same_as<T, Ts> || ...)> {};
+template <stdshape::derived_variant V, class T>
+struct is_alt<V, T> : is_alt<stdshape::variant_base_t<V>, T> {};
 
 // Add a prefix to every stream key in a Sub, in place.
 template <class S>

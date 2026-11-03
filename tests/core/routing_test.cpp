@@ -225,6 +225,36 @@ int replay_routes_identically() {
     return 0;
 }
 
+// ── a named Msg: a struct over the variant, not an alias of it ───────────
+// Same routing as an alias. The point is the shorter name: an alias spells
+// every alternative into each symbol and RTTI name that mentions it.
+using NamedBase = std::variant<ComposerMsg, StreamMsg>;
+struct NamedMsg : NamedBase {
+    using NamedBase::NamedBase;
+};
+
+struct Named {
+    using Model = App::Model;
+    using Msg = NamedMsg;
+    using Cmd = jaal::Cmd<Msg>;
+    static Cmd update(Model& m, Enter)     { ++m.enters; return {}; }
+    static Cmd update(Model& m, Backspace) { ++m.backs;  return {}; }
+    static Cmd update(Model& m, Submit s)  { m.submitted = std::move(s.text); return {}; }
+    static Cmd update(Model& m, StreamMsg) { ++m.group_calls; return {}; }
+};
+static_assert(jaal::Program<Named>);
+static_assert(jaal::Sendable<NamedMsg>);
+static_assert(std::same_as<p::plan_of<Named, NamedMsg>, p::into<ComposerMsg, StreamMsg>>);
+
+int a_named_msg_routes_like_its_variant() {
+    jaal::headless<Named> h;
+    h.send(NamedMsg{ComposerMsg{Submit{"named"}}});
+    h.send(NamedMsg{StreamMsg{Done{}}});
+    CHECK(h.model().submitted == "named");
+    CHECK(h.model().group_calls == 1);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -234,6 +264,7 @@ int main() {
     if (int r = routing_goes_as_deep_as_the_variant()) return r;
     if (int r = a_generic_handler_covers_the_rest()) return r;
     if (int r = replay_routes_identically()) return r;
+    if (int r = a_named_msg_routes_like_its_variant()) return r;
     std::puts("routing_test: ok");
     return 0;
 }

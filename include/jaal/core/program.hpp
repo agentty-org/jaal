@@ -70,6 +70,9 @@ namespace detail::prog {
 
 template <class T> inline constexpr bool is_variant_v = false;
 template <class... Ts> inline constexpr bool is_variant_v<std::variant<Ts...>> = true;
+// A class derived from one std::variant (a named Msg) is that variant.
+template <stdshape::derived_variant T>
+inline constexpr bool is_variant_v<T> = true;
 
 // ── time, as an argument ─────────────────────────────────────────────────────────────
 //
@@ -214,6 +217,8 @@ struct nowhere {};                       // no handler, and nothing to descend i
 
 template <class C> struct group_of            { using type = nowhere; };
 template <class... Ls> struct group_of<std::variant<Ls...>> { using type = into<Ls...>; };
+template <stdshape::derived_variant C>
+struct group_of<C> : group_of<stdshape::variant_base_t<C>> {};
 
 /// What jaal will do with a message of type C in program P.
 template <class P, class C>
@@ -296,6 +301,9 @@ template <class P, class V> inline constexpr bool updates_every_case = false;
 template <class P, class... Cs>
 inline constexpr bool updates_every_case<P, std::variant<Cs...>> =
     (check_route<P, Cs, std::variant<Cs...>>() && ...);
+template <class P, stdshape::derived_variant V>
+inline constexpr bool updates_every_case<P, V> =
+    updates_every_case<P, stdshape::variant_base_t<V>>;
 
 template <class P>
 concept has_init = requires(typename P::Model& m) {
