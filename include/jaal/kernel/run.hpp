@@ -310,6 +310,13 @@ using host_context = basic_host_context<host_event_t<H>>;
 
 namespace detail::run {
 
+/// std::optional of any std::chrono::duration: what wait_hint() may return.
+template <class T> inline constexpr bool is_optional_duration = false;
+template <class R, class Per>
+inline constexpr bool is_optional_duration<std::optional<std::chrono::duration<R, Per>>> = true;
+template <class T>
+concept optional_duration = is_optional_duration<std::remove_cvref_t<T>>;
+
 JAAL_DECLARES_MEMBER(host_declares_attach,     attach);
 JAAL_DECLARES_MEMBER(host_declares_on_ready,   on_ready);
 JAAL_DECLARES_MEMBER(host_declares_on_signal,  on_signal);
@@ -357,10 +364,11 @@ consteval void check_hosts() {
     if constexpr (host_declares_wait_hint<H>) {
         static_assert(
             requires(H& h) {
-                { h.wait_hint() } -> std::convertible_to<std::optional<std::chrono::milliseconds>>;
+                { h.wait_hint() } -> detail::run::optional_duration;
             },
             "jaal: H::wait_hint is declared but its signature doesn't match. "
-            "Expected: std::optional<std::chrono::milliseconds> wait_hint() const. "
+            "Expected: std::optional<std::chrono::duration<...>> wait_hint() const "
+            "(milliseconds, or nanoseconds for a frame pacer). "
             "A wrong shape means the loop won't wake for the host's deferred "
             "frames — keystrokes will draw the PREVIOUS model until an "
             "unrelated event arrives (real bug seen when maya ran on jaal).");
