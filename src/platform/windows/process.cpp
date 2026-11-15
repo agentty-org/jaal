@@ -221,6 +221,10 @@ result<windows_process> windows_process::adopt(adopted_child a) {
     s.pid     = static_cast<DWORD>(a.pid);
     if (a.stdout_pipe)
         s.out_r = owned_handle{static_cast<HANDLE>(a.stdout_pipe)};
+    if (a.stderr_pipe)
+        s.err_r = owned_handle{static_cast<HANDLE>(a.stderr_pipe)};
+    if (a.stdin_pipe)
+        s.in_w = owned_handle{static_cast<HANDLE>(a.stdin_pipe)};
     return self;
 }
 

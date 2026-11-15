@@ -69,6 +69,10 @@ class windows_process {
         void* process = nullptr;
         /// The read end of the stdout+stderr merge pipe. Taken likewise.
         void* stdout_pipe = nullptr;
+        /// Optional, taken likewise: a separate stderr read end, and the
+        /// write end of the child's stdin. nullptr when not piped.
+        void* stderr_pipe = nullptr;
+        void* stdin_pipe  = nullptr;
     };
     [[nodiscard]] static result<windows_process> adopt(adopted_child);
 
