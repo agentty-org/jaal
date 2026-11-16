@@ -254,6 +254,14 @@ struct host : recorder {
 
 }  // namespace detail::simx
 
+/// The seeded world (one scheduler for task results and inputs, one RNG) and
+/// the executor that runs task bodies in it. Public for hosts that build a
+/// simulation around their OWN host and kernel -- a UI framework simulating
+/// its real window host, say -- rather than through sim<P>.
+using sim_world = detail::simx::world;
+template <class Msg>
+using sim_executor = detail::simx::executor<Msg>;
+
 // ── sim ──────────────────────────────────────────────────────────────
 //
 // `Event` is the input the scenario will send with input(t, ev). It goes

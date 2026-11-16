@@ -183,6 +183,25 @@ bool host_owes_frame(const H& h) {
 }  // namespace detail::run
 using detail::run::host_owes_frame;
 
+// ── for hosts that drive the kernel themselves ──────────────────────────────
+//
+// run() is the usual loop. A host that must turn the kernel from a loop it
+// does not own (Cocoa's run loop, an engine's frame, a headless test driver)
+// builds a kernel::kernel and steps it itself; these are the pieces run()
+// uses to do that, public so such a host never reaches into detail::.
+
+/// The kernel's view of a host: forwards effects and sources, nothing else.
+template <class H, class KE>
+using forward_host = detail::run::forward_host<H, KE>;
+
+/// A host event as the kernel's event type (signals folded in).
+template <class KE, class HE>
+[[nodiscard]] KE to_kernel_event(const HE& ev) { return detail::run::to_kernel_event<KE>(ev); }
+
+/// The signals run() listens for, and the exit code each ends a program with.
+inline constexpr signal_set all_signals = detail::run::all_signals;
+[[nodiscard]] constexpr int exit_code_for(sig s) noexcept { return detail::run::exit_code_for(s); }
+
 struct run_options {
     kernel::options kernel{};
     /// Stop with 128+signo on interrupt/terminate/hangup that the program

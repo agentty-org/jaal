@@ -68,7 +68,10 @@
 #include "../core/co_owned.hpp"
 #include "../core/fx.hpp"
 #include "../core/sendable.hpp"
+#include "lock_order.hpp"
+#include "pool.hpp"
 #include "waits.hpp"
+#include "waits_for.hpp"
 
 namespace jaal {
 
@@ -77,6 +80,9 @@ class nursery;
 template <class F>
     requires std::invocable<const F&, std::size_t>
 void parallel_for(const unlocked& cap, std::size_t n, std::size_t width, const F& body);
+template <class F>
+    requires std::invocable<const F&, std::size_t>
+void parallel_for(kernel::pool& p, std::size_t n, std::size_t width, const F& body);
 
 namespace detail::scope {
 
@@ -174,6 +180,9 @@ private:
     template <class F>
         requires std::invocable<const F&, std::size_t>
     friend void ::jaal::parallel_for(const unlocked&, std::size_t, std::size_t, const F&);
+    template <class F>
+        requires std::invocable<const F&, std::size_t>
+    friend void ::jaal::parallel_for(kernel::pool&, std::size_t, std::size_t, const F&);
     loan(T v, std::size_t count) noexcept : n(count), v_(v) {}
     T v_;
 };
@@ -474,15 +483,15 @@ void parallel_for(const unlocked& cap, std::size_t n, std::size_t width, const F
     };
     const borrowed b{&body, [](const void* p, std::size_t i) { (*static_cast<const F*>(p))(i); }};
     auto w = co_owned<work>::make();
-    constexpr auto share = [](std::stop_token st, std::size_t, co_owned<work> w,
+    constexpr auto share = [](std::stop_token st, std::size_t, co_owned<work> shared,
                               detail::scope::loan<borrowed> l) {
-        while (!st.stop_requested() && !w->failed.load(std::memory_order_relaxed)) {
-            const std::size_t i = w->next.fetch_add(1, std::memory_order_relaxed);
+        while (!st.stop_requested() && !shared->failed.load(std::memory_order_relaxed)) {
+            const std::size_t i = shared->next.fetch_add(1, std::memory_order_relaxed);
             if (i >= l.n) return;
             try {
                 l->call(l->body, i);
             } catch (...) {
-                w->failed.store(true, std::memory_order_relaxed);
+                shared->failed.store(true, std::memory_order_relaxed);
                 throw;
             }
         }
@@ -493,6 +502,88 @@ void parallel_for(const unlocked& cap, std::size_t n, std::size_t width, const F
         share(nur.stop_token(), 0, w, lb);   // the caller runs a share too
         rest.join();
     });
+}
+
+namespace detail::scope {
+// One parallel_for(pool&) call's shared state. Co-owned by the caller and
+// every helper job, so a helper that wakes after the call returned touches
+// only this block, never the caller's body.
+//
+// `error` is the one plain field: it is written at most once, by the share
+// that wins `failed.exchange(true)`, BEFORE that share's release increment
+// of `done`; the owner reads it only after an acquire load sees done == n.
+// The exchange is the lock and `done` the publication, so it is Sync by
+// construction, which co_owned's field walk cannot see -- hence the opt-in.
+struct pool_join {
+    std::atomic<std::size_t> next{0};
+    std::atomic<std::size_t> done{0};
+    std::atomic<bool>        failed{false};
+    std::exception_ptr       error{};
+};
+}  // namespace detail::scope
+
+template <> inline constexpr bool sync_opt_in<detail::scope::pool_join> = true;
+
+/// parallel_for on a WARM pool: helpers are the pool's existing workers,
+/// not threads made for this call, so a fork-join costs a few microseconds
+/// instead of a thread spawn per share. For per-frame work (a renderer's
+/// tiles) where scope()'s spawn-and-join would dominate.
+///
+/// Same contract as the scoped form: body(i) for every i in [0, n), the
+/// caller runs a share, it returns when every index has run, the first
+/// exception is rethrown. `body` is borrowed and must be safe to call from
+/// several threads at once; nothing outlives the call.
+///
+/// No capability parameter, like pool::shutdown: the wait is checked at
+/// the call instead. It aborts if the calling thread holds any lock (a
+/// helper needing that lock would deadlock the join) or is one of this
+/// pool's own jobs (it would wait for itself).
+template <class F>
+    requires std::invocable<const F&, std::size_t>
+void parallel_for(kernel::pool& p, std::size_t n, std::size_t width, const F& body) {
+    if (n == 0) return;
+    width = std::min(std::max<std::size_t>(width, 1), n);
+    if (width == 1) {
+        for (std::size_t i = 0; i < n; ++i) body(i);
+        return;
+    }
+    detail::cap::require_unlocked("jaal::parallel_for(pool&)");
+    p.check_not_own_job("jaal::parallel_for(pool&)");
+    const unlocked u = cap_access::fresh_thread();   // proven just above
+
+    struct borrowed {
+        const void* body;
+        void (*call)(const void*, std::size_t);
+    };
+    const borrowed b{&body, [](const void* q, std::size_t i) { (*static_cast<const F*>(q))(i); }};
+    const detail::scope::loan<borrowed> lb{b, n};
+    auto w = co_owned<detail::scope::pool_join>::make();
+
+    // Claim indices until none are left. A share touches the borrowed body
+    // only for an index it claimed, and the owner waits for every claimed
+    // index to finish, so the borrow is never used after the call.
+    const auto share = [](co_owned<detail::scope::pool_join> j, detail::scope::loan<borrowed> l) {
+        for (std::size_t i = j->next.fetch_add(1, std::memory_order_relaxed); i < l.n;
+             i = j->next.fetch_add(1, std::memory_order_relaxed)) {
+            if (!j->failed.load(std::memory_order_relaxed)) {
+                try {
+                    l->call(l->body, i);
+                } catch (...) {
+                    if (!j->failed.exchange(true, std::memory_order_acq_rel))
+                        j->error = std::current_exception();
+                }
+            }
+            j->done.fetch_add(1, std::memory_order_acq_rel);
+        }
+        j->done.notify_all();
+    };
+    for (std::size_t h = 0; h + 1 < width; ++h)
+        kernel::pool_access::post(p, [share, w, lb](std::stop_token) { share(w, lb); });
+    share(w, lb);
+    for (std::size_t d = w->done.load(std::memory_order_acquire); d < n;
+         d = w->done.load(std::memory_order_acquire))
+        atomic_wait(u, w->done, d, std::memory_order_acquire);
+    if (w->error) std::rethrow_exception(w->error);
 }
 
 }  // namespace jaal

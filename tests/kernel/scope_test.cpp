@@ -372,9 +372,33 @@ static int guarded_tests(const jaal::unlocked& cap) {
     return 0;
 }
 
+// parallel_for on a warm kernel::pool: every index exactly once, the caller
+// takes part, an exception comes back, and repeated calls on one pool never
+// see a previous call's state (the race a hand-rolled pool had).
+static int warm_pool_tests(const jaal::unlocked&) {
+    jaal::kernel::pool p{4};
+    for (int round = 0; round < 200; ++round) {
+        const std::size_t n = 1 + static_cast<std::size_t>(round % 97);
+        std::vector<std::atomic<int>> hits(n);
+        jaal::parallel_for(p, n, 5, [&](std::size_t i) { hits[i].fetch_add(1, std::memory_order_relaxed); });
+        for (auto& h : hits)
+            if (h.load() != 1) return 40;
+    }
+    bool threw = false;
+    try {
+        jaal::parallel_for(p, 64, 5, [](std::size_t i) { if (i == 17) throw std::runtime_error("x"); });
+    } catch (const std::runtime_error&) { threw = true; }
+    if (!threw) return 41;
+    // width 1 runs inline, in order
+    std::vector<std::size_t> order;
+    jaal::parallel_for(p, 5, 1, [&](std::size_t i) { order.push_back(i); });
+    if (order != std::vector<std::size_t>{0, 1, 2, 3, 4}) return 42;
+    return 0;
+}
+
 int main() {
     return jaal::thread_root([&](const jaal::unlocked& cap) -> int {
-        int (*const checks[])(const jaal::unlocked&) = {scope_tests, guarded_tests};
+        int (*const checks[])(const jaal::unlocked&) = {scope_tests, guarded_tests, warm_pool_tests};
         for (auto f : checks)
             if (int r = f(cap)) {
                 std::fprintf(stderr, "scope_test: check %d failed\n", r);

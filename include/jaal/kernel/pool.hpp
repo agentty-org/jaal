@@ -215,6 +215,12 @@ public:
         return shutdown_unchecked(grace, /*rewait=*/true);
     }
 
+    /// Abort (with the reason) if the calling thread is one of this pool's
+    /// own jobs: for anything that is about to WAIT on work posted here.
+    void check_not_own_job(const char* what) const noexcept {
+        lock_order::check_or_abort(c_.get(), what);
+    }
+
     /// Queue `body(stop_token, args...)` for the shared workers. The body is
     /// captureless and the args Sendable (see JobBody).
     template <class F, class... Args>
