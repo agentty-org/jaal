@@ -46,6 +46,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stop_token>
 #include <thread>
 #include <tuple>
@@ -165,6 +166,20 @@ public:
     /// Non-blocking: has it finished? Needs nothing.
     [[nodiscard]] bool ready() const {
         return f_.valid() && f_.wait_for(std::chrono::seconds{0}) == std::future_status::ready;
+    }
+    /// The result if the job has finished, else nothing; never waits, so it
+    /// needs no capability. Takes the result (rethrowing what the job threw).
+    [[nodiscard]] std::optional<R> try_take() requires(!std::is_void_v<R>) {
+        if (!ready()) return std::nullopt;
+        return f_.get();
+    }
+    /// Block for the result from a thread's ROOT: startup code before any
+    /// loop exists, holding no lock. jaal checks that at runtime (it aborts
+    /// if a guarded lock is held), the same check thread_root makes, so a
+    /// caller needs no capability of its own.
+    R get_at_root() {
+        detail::cap::require_unlocked("jaal::job_result::get_at_root");
+        return f_.get();
     }
     [[nodiscard]] bool valid() const noexcept { return f_.valid(); }
 
