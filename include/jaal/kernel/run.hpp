@@ -432,10 +432,16 @@ int run(H& host, run_options opt, durable<P> d) {
     detail::run::forward_host<H, KE> fwd{host};
 
     auto wake = [waker] { waker.wake(); };
-    K k = d.resume
-        ? K::start_from(fwd, std::move(*d.resume), std::move(d.resume_cmd),
-                        platform::steady_clock{}, opt.kernel, wake, std::move(d.journal))
-        : K::start(fwd, platform::steady_clock{}, opt.kernel, wake, std::move(d.journal));
+    // Not `K k = c ? K::start_from(...) : K::start(...)`: MSVC materialises
+    // the conditional's operands and then wants kernel's deleted move
+    // constructor (C2280). Each `return` of a prvalue is guaranteed elision
+    // everywhere.
+    K k = [&]() -> K {
+        if (d.resume)
+            return K::start_from(fwd, std::move(*d.resume), std::move(d.resume_cmd),
+                                 platform::steady_clock{}, opt.kernel, wake, std::move(d.journal));
+        return K::start(fwd, platform::steady_clock{}, opt.kernel, wake, std::move(d.journal));
+    }();
 
     // Shutdown order, owned by a destructor (kernel/teardown.hpp): signals
     // off, then host.release(), then kernel.finish(). Declared here so it
