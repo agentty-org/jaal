@@ -181,6 +181,14 @@ public:
         detail::cap::require_unlocked("jaal::job_result::get_at_root");
         return f_.get();
     }
+    /// Wait up to `d` from a thread's ROOT (as get_at_root): a bounded
+    /// block, woken the moment the job finishes -- unlike a sleep-poll,
+    /// whose sleeps round up to the OS timer tick (15.6 ms on Windows).
+    template <class Rep, class Period>
+    [[nodiscard]] bool wait_for_at_root(std::chrono::duration<Rep, Period> d) const {
+        detail::cap::require_unlocked("jaal::job_result::wait_for_at_root");
+        return f_.valid() && f_.wait_for(d) == std::future_status::ready;
+    }
     [[nodiscard]] bool valid() const noexcept { return f_.valid(); }
 
 private:
