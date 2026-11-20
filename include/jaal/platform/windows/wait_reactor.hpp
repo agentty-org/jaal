@@ -91,7 +91,21 @@ public:
     /// Watch a handle. The kind is asked of the OS: a pipe gets a reader
     /// thread (see above), a console or file reports writable at once, and
     /// anything else (event, process, console input) is waited on directly.
+    ///
+    /// Pass `message_queue()` to be woken when the CALLING thread has window
+    /// messages (posted, sent, input, paint, timers). That is how a GUI loop
+    /// runs on this reactor: the wait becomes MsgWaitForMultipleObjectsEx,
+    /// so a keystroke wakes the loop directly, with no helper thread, and a
+    /// window that needs pumping can never be reported "Not Responding".
+    /// Message queues are per-thread, so the reactor must wait() on the
+    /// thread that owns the windows.
     [[nodiscard]] result<registration> watch(handle h, interest what, std::uint64_t token);
+
+    /// The sentinel handle meaning "this thread's window-message queue". It
+    /// is not a real HANDLE; never pass it to the OS yourself.
+    [[nodiscard]] static handle message_queue() noexcept {
+        return reinterpret_cast<handle>(static_cast<std::intptr_t>(-1024));
+    }
 
     /// Force the pipe path for read interest. watch() finds pipes by itself.
     [[nodiscard]] result<registration> watch_pipe(handle h, std::uint64_t token);

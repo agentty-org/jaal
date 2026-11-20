@@ -169,7 +169,9 @@ struct wait_reactor::state {
     //             poll() says for a tty)
     //   file      a disk file: always readable and writable, as poll() says
     //   pipe      read via a pipe_reader, write via the pipe's free space
-    enum class kind : std::uint8_t { waitable, stream, file, pipe };
+    //   messages  this thread's window-message queue (no HANDLE: the wait
+    //             itself becomes MsgWaitForMultipleObjectsEx)
+    enum class kind : std::uint8_t { waitable, stream, file, pipe, messages };
 
     HANDLE wake = nullptr;
     HANDLE timer = nullptr;                   // precise timeouts; may be NULL
@@ -197,6 +199,12 @@ struct wait_reactor::state {
     [[nodiscard]] std::size_t live_count() const noexcept {
         return static_cast<std::size_t>(
             std::count_if(slots.begin(), slots.end(), [](const slot& s) { return s.live; }));
+    }
+
+    /// Is any live slot the message queue? Decides the wait primitive.
+    [[nodiscard]] bool watches_messages() const noexcept {
+        return std::any_of(slots.begin(), slots.end(),
+                           [](const slot& s) { return s.live && s.k == kind::messages; });
     }
 
     // A pipe watched only for reading gets a reader thread. One watched for
@@ -318,7 +326,9 @@ wait_reactor::watch(handle h, interest what, std::uint64_t token) {
     // hung. GetFileType is one syscall and can't be wrong about this.
     using kind = state::kind;
     kind k = kind::waitable;
-    switch (::GetFileType(static_cast<HANDLE>(h))) {
+    if (h == message_queue()) {
+        k = kind::messages;
+    } else switch (::GetFileType(static_cast<HANDLE>(h))) {
         case FILE_TYPE_PIPE: k = kind::pipe;   break;
         case FILE_TYPE_CHAR: k = kind::stream; break;
         case FILE_TYPE_DISK: k = kind::file;   break;
@@ -439,6 +449,12 @@ result<wait_result> wait_reactor::wait(wait_timeout wt) {
             const bool r = wants_read(sl.what), w = wants_write(sl.what);
             readiness rd{};
             switch (sl.k) {
+                case kind::messages:
+                    // GetQueueStatus' high word: what is IN the queue now.
+                    // (The low word is "new since last checked", which a
+                    // PeekMessage elsewhere clears -- the wrong question.)
+                    rd.readable = r && HIWORD(::GetQueueStatus(QS_ALLINPUT)) != 0;
+                    break;
                 case kind::waitable:
                     if (::WaitForSingleObject(sl.h, 0) == WAIT_OBJECT_0) {
                         rd.readable = r;
@@ -520,7 +536,9 @@ result<wait_result> wait_reactor::wait(wait_timeout wt) {
         for (auto& sl : s.slots) {
             if (!sl.live) continue;
             const bool r = wants_read(sl.what);
-            if (sl.k == kind::waitable || (sl.k == kind::stream && r)) {
+            if (sl.k == kind::messages) {
+                continue;   // not a handle: covered by the wait call below
+            } else if (sl.k == kind::waitable || (sl.k == kind::stream && r)) {
                 hs.push_back(sl.h);
             } else if (sl.k == kind::pipe && r && sl.reader && sl.reader->armed
                        && sl.reader->can_block.load(std::memory_order_acquire)) {
@@ -538,8 +556,16 @@ result<wait_result> wait_reactor::wait(wait_timeout wt) {
         if (must_poll) slice = std::min<DWORD>(slice, kPollQuantum);
 
         ++s.os_waits;
-        const DWORD res = ::WaitForMultipleObjects(static_cast<DWORD>(hs.size()), hs.data(),
-                                                   FALSE, slice);
+        // With the message queue watched, the SAME wait also returns when the
+        // thread has input. MWMO_INPUTAVAILABLE matters: without it a message
+        // that arrived before this call (already seen by a PeekMessage, so
+        // no longer "new") would not wake us, and the window would sit on a
+        // keystroke until something else happened. Also stops the thread
+        // being "Not Responding": it is always waiting in a message-aware call.
+        const DWORD res = s.watches_messages()
+            ? ::MsgWaitForMultipleObjectsEx(static_cast<DWORD>(hs.size()), hs.data(), slice,
+                                            QS_ALLINPUT, MWMO_INPUTAVAILABLE)
+            : ::WaitForMultipleObjects(static_cast<DWORD>(hs.size()), hs.data(), FALSE, slice);
         if (res == WAIT_FAILED) {
             const auto e = static_cast<std::int32_t>(::GetLastError());
             if (precise) ::CancelWaitableTimer(s.timer);

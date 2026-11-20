@@ -140,6 +140,9 @@ jaal_test(platform_signals_test platform/signals_test.cpp)
 if(WIN32)
     # The wait reactor on pipes: idle costs no wakeups, interest is real.
     jaal_test(platform_windows_pipe_test platform/windows_pipe_test.cpp)
+    # The wait reactor on the thread's window-message queue (GUI loops).
+    jaal_test(platform_windows_message_test platform/windows_message_test.cpp)
+    target_link_libraries(platform_windows_message_test PRIVATE user32)
 endif()
 jaal_test(kernel_run_test kernel/run_test.cpp)
 jaal_test(kernel_pacing_test kernel/pacing_test.cpp)
