@@ -23,6 +23,7 @@
 
 #include "kernel/delay.hpp"
 #include "kernel/fault.hpp"
+#include "kernel/cell.hpp"
 #include "kernel/guarded.hpp"
 #include "kernel/kernel.hpp"
 #include "kernel/mailbox.hpp"

@@ -55,6 +55,7 @@ jaal_test(kernel_parts_test kernel/kernel_parts_test.cpp)
 jaal_test(kernel_test kernel/kernel_test.cpp)
 jaal_test(kernel_scope_test kernel/scope_test.cpp)
 # published<T> twice: the atomic<shared_ptr> path and the libc++ fallback.
+jaal_test(kernel_cell_test kernel/cell_test.cpp)
 jaal_test(kernel_published_test kernel/published_test.cpp)
 jaal_test(kernel_published_mutex_test kernel/published_test.cpp)
 target_compile_definitions(kernel_published_mutex_test PRIVATE JAAL_FORCE_PUBLISHED_MUTEX=1)
@@ -333,6 +334,13 @@ jaal_compile_fail(NAME scope_helper_no_view SOURCE compile_fail/scope.cpp CASE 9
                   MATCH "jaal: a scope helper argument is not Sendable")
 jaal_compile_fail(NAME scope_loan_private SOURCE compile_fail/scope.cpp CASE 10
                   MATCH "private")
+
+# cell: a leaf lock's body reaches nothing but its value and owned arguments
+jaal_compile_fail(NAME cell_capturing_body SOURCE compile_fail/cell.cpp CASE 1 MATCH "CAPTURELESS")
+jaal_compile_fail(NAME cell_lock_argument  SOURCE compile_fail/cell.cpp CASE 2 MATCH "not Sendable")
+jaal_compile_fail(NAME cell_pointer_escape SOURCE compile_fail/cell.cpp CASE 3 MATCH "outlive the lock")
+jaal_compile_fail(NAME cell_view_escape    SOURCE compile_fail/cell.cpp CASE 4 MATCH "outlive the lock")
+jaal_compile_fail(NAME cell_borrowed_arg   SOURCE compile_fail/cell.cpp CASE 5 MATCH "not Sendable")
 
 # capabilities: every lock-order shape and every smuggle fails to build
 # (compile_fail/capability.cpp). The conversion failures name below<R>, the

@@ -63,6 +63,8 @@ kernel/strays.hpp: atomic
 kernel/waits.hpp: thread_local
 # lock_order.hpp: per-thread record of held guarded locks and running jobs.
 kernel/lock_order.hpp: thread_local
+# cell<T>: the leaf lock's shared_mutex (its body can reach no other lock).
+kernel/cell.hpp: mutex
 # guarded<T>: the shared_mutex it wraps.
 kernel/guarded.hpp: mutex cap_mint
 # delay_for: condition_variable_any needs a Lockable to wait on, so the mutex

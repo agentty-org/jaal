@@ -34,6 +34,7 @@
 #include "core/sub.hpp"
 #include "kernel/executor.hpp"
 #include "kernel/fault.hpp"
+#include "kernel/cell.hpp"
 #include "kernel/guarded.hpp"
 #include "kernel/kernel.hpp"
 #include "kernel/replay.hpp"
