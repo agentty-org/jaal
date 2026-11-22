@@ -257,6 +257,41 @@ int a_named_msg_routes_like_its_variant() {
 
 }  // namespace
 
+// ── the whole root, handled in one place ───────────────────────────────────
+// A program's seam: one update(Model&, Msg) that does something for every
+// message (stamp the step, drain an outbox) and then dispatches. It is a
+// Program on its own: the check must not demand per-leaf handlers that
+// route() never reaches.
+namespace {
+struct SeamMsg : std::variant<Enter, Submit> {
+    using variant::variant;
+};
+}  // namespace
+template <> inline constexpr bool jaal::handled_as_group<SeamMsg> = true;
+namespace {
+struct Seam {
+    struct Model { int steps = 0; std::string submitted; };
+    using Msg = SeamMsg;
+    using Cmd = jaal::Cmd<Msg>;
+    static Cmd update(Model& m, Msg msg) {
+        ++m.steps;
+        if (auto* s = std::get_if<Submit>(&msg)) m.submitted = s->text;
+        return {};
+    }
+};
+static_assert(jaal::Program<Seam>);
+static_assert(std::same_as<p::plan_of<Seam, SeamMsg>, p::at_leaf>);
+
+int a_root_handled_as_a_group_is_the_seam() {
+    jaal::headless<Seam> h;
+    h.send(SeamMsg{Enter{}});
+    h.send(SeamMsg{Submit{"seam"}});
+    CHECK(h.model().steps == 2);
+    CHECK(h.model().submitted == "seam");
+    return 0;
+}
+}  // namespace
+
 int main() {
     if (int r = leaves_go_to_their_own_handlers()) return r;
     if (int r = a_group_handler_takes_the_whole_domain()) return r;
@@ -265,6 +300,7 @@ int main() {
     if (int r = a_generic_handler_covers_the_rest()) return r;
     if (int r = replay_routes_identically()) return r;
     if (int r = a_named_msg_routes_like_its_variant()) return r;
+    if (int r = a_root_handled_as_a_group_is_the_seam()) return r;
     std::puts("routing_test: ok");
     return 0;
 }

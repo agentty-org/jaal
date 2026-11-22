@@ -301,7 +301,18 @@ template <class P, class V> inline constexpr bool updates_every_case = false;
 template <class P, class... Cs>
 inline constexpr bool updates_every_case<P, std::variant<Cs...>> =
     (check_route<P, Cs, std::variant<Cs...>>() && ...);
+template <class P, class... Cs>
+    requires (::jaal::handled_as_group<std::variant<Cs...>> && updates_case<P, std::variant<Cs...>>)
+inline constexpr bool updates_every_case<P, std::variant<Cs...>> = true;
+// A ROOT handled as a group is one case, exactly as route() will treat it:
+// the program's own update(Model&, Msg) is the seam (stamping the time,
+// draining an outbox) and dispatches the leaves itself. Without this the
+// check walked into the alternatives route() never reaches.
 template <class P, stdshape::derived_variant V>
+    requires (::jaal::handled_as_group<V> && updates_case<P, V>)
+inline constexpr bool updates_every_case<P, V> = true;
+template <class P, stdshape::derived_variant V>
+    requires (!(::jaal::handled_as_group<V> && updates_case<P, V>))
 inline constexpr bool updates_every_case<P, V> =
     updates_every_case<P, stdshape::variant_base_t<V>>;
 
