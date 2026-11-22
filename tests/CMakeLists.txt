@@ -115,6 +115,13 @@ if(UNIX)
             if(EXISTS "${_asan_rt}")
                 set(_no_pidfd_preload "${_asan_rt}:${_no_pidfd_preload}")
             endif()
+            if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+                # clang links ASan STATICALLY, and a static runtime can't sit
+                # beside a preloaded shared one ("incompatible ASan runtimes").
+                # The no-pidfd fallback is plain syscalls; it runs in every
+                # non-ASan build. Here, skip it rather than report a false fail.
+                set_tests_properties(platform_process_conformance_no_pidfd PROPERTIES DISABLED TRUE)
+            endif()
         endif()
         set_tests_properties(platform_process_conformance_no_pidfd PROPERTIES
             ENVIRONMENT "LD_PRELOAD=${_no_pidfd_preload};JAAL_EXPECT_NO_PIDFD=1")
