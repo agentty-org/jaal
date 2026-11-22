@@ -54,14 +54,21 @@ namespace jaal::meta {
 inline constexpr bool has_fields_support = JAAL_HAS_FIELDS;
 
 // ── aggregate_struct ─────────────────────────────────────────────────────
-// A class aggregate whose fields can be bound. Tuple-like types
-// (std::pair, std::array) also have a binding size but are NOT treated as
-// structs here: they are handled by their own rules, which is more precise.
+// A class whose fields can ALL be bound: every non-static data member is
+// public and declared in one class. That includes aggregates, and also value
+// types with constructors (Vec2{x, y}) -- their fields are still the whole of
+// their state, so jaal can prove them instead of a human claiming it. A class
+// with any private field can't be bound and still needs an opt-in, as can a
+// polymorphic one (a base can't see what a derived class adds).
+// Tuple-like types (std::pair, std::array) also have a binding size but are
+// NOT treated as structs here: they are handled by their own rules, which is
+// more precise.
 template <class T>
 concept aggregate_struct =
     has_fields_support
     && std::is_class_v<T>
-    && std::is_aggregate_v<T>
+    && !std::is_polymorphic_v<T>
+    && !std::is_union_v<T>
 #if JAAL_HAS_FIELDS
     && requires { __builtin_structured_binding_size(T); }
 #endif

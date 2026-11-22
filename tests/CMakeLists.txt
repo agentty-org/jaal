@@ -44,6 +44,7 @@ jaal_test(docs_reference_examples docs/reference_examples.cpp)
 # docs/manual.md's walkthrough app, compiled and run section by section.
 jaal_test(docs_manual_examples docs/manual_examples.cpp)
 jaal_test(core_cmd_test core/cmd_test.cpp)
+jaal_test(core_loop_only_test core/loop_only_test.cpp)
 jaal_test(core_sub_test core/sub_test.cpp)
 jaal_test(core_routing_test core/routing_test.cpp)
 jaal_test(core_child_test core/child_test.cpp)
@@ -261,6 +262,8 @@ jaal_compile_fail(NAME sink_box_private      SOURCE compile_fail/sink.cpp CASE 2
                   MATCH "private|is not accessible|no member named")
 jaal_compile_fail(NAME sink_box_no_upgrade   SOURCE compile_fail/sink.cpp CASE 3
                   MATCH "private|is not accessible|no member named")
+jaal_compile_fail(NAME sink_loop_only      SOURCE compile_fail/sink.cpp CASE 4
+                  MATCH "is loop-only")
 
 # owned_handle: the double-close and raw-int paths must not compile. These
 # are ordinary type errors rather than jaal diagnostics, so each is pinned

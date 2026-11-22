@@ -45,6 +45,15 @@ int main() {
     auto strong = s.box_.lock();            // private member
     return strong ? 1 : 0;
 }
+#elif JAAL_CASE == 4
+// A loop-only message (it carries a callable whose captures jaal can't see)
+// posted from a worker's Sink: refused at compile time.
+struct EditLike { int v = 0; };
+template <> inline constexpr bool jaal::loop_only<EditLike> = true;
+int main() {
+    Sink<EditLike> out;
+    return out.send(EditLike{}) ? 1 : 0;
+}
 #endif
 
 // NOT a case, and worth saying why: `sink_access::make` IS public, by

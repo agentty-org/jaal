@@ -21,10 +21,15 @@
 // A default-constructed Sink is "closed": every send returns false. That's
 // what a task gets in tests that don't care about its output.
 
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
+#include <type_traits>
 #include <utility>
+#include <variant>
 
 #include "sendable.hpp"
+#include "stdshape.hpp"
 
 namespace jaal {
 
@@ -43,6 +48,45 @@ struct mailbox_iface {
 };
 }  // namespace detail
 
+/// A message that may only be made ON the loop thread: one that carries a
+/// callable whose captures jaal can't see (an app's "edit the model" lambda),
+/// so built on a worker it could point at the worker's stack. It may sit in
+/// a Msg -- the loop builds and folds it in place -- but it can NEVER be
+/// posted through a Sink, the door every task, stream and outside thread
+/// uses:
+///   * sending one directly (`out.send(MyEdit{...})`) does not compile;
+///   * sending one inside a bigger Msg aborts on the first attempt, naming
+///     the rule -- never a dangling capture that works until it doesn't.
+template <class T>
+inline constexpr bool loop_only = false;
+
+namespace detail::loop_only_ {
+template <class M> struct alts { using type = void; };
+template <class... A> struct alts<std::variant<A...>> { using type = std::variant<A...>; };
+template <stdshape::derived_variant M> struct alts<M> { using type = stdshape::variant_base_t<M>; };
+
+/// Could a value of M hold a loop-only message, anywhere in its tree?
+template <class M>
+consteval bool may_hold() {
+    using V = typename alts<M>::type;
+    if constexpr (loop_only<M>) return true;
+    else if constexpr (std::is_void_v<V>) return false;
+    else return []<class... A>(std::type_identity<std::variant<A...>>) {
+        return (may_hold<A>() || ...);
+    }(std::type_identity<V>{});
+}
+/// Does this value hold one?
+template <class M>
+bool holds(const M& m) {
+    if constexpr (loop_only<M>) return true;
+    else if constexpr (!may_hold<M>()) return false;
+    else {
+        using V = typename alts<M>::type;
+        return std::visit([](const auto& a) { return holds(a); }, static_cast<const V&>(m));
+    }
+}
+}  // namespace detail::loop_only_
+
 struct sink_access;   // the kernel's key
 
 template <class Msg>
@@ -56,9 +100,23 @@ public:
 
     /// Post a message. False when the loop is gone (or this Sink is closed).
     bool send(Msg m) const {
+        // A Msg that IS loop-only can never be sent: say so at compile time.
+        static_assert(!loop_only<Msg>,
+                      "jaal: this message is loop-only (jaal::loop_only): it may be made on the loop, "
+                      "never sent through a Sink from a task or stream. Send a plain message and make "
+                      "the change in update().");
+        if constexpr (detail::loop_only_::may_hold<Msg>()) {
+            if (detail::loop_only_::holds(m)) [[unlikely]] {
+                std::fputs("jaal: a loop-only message (jaal::loop_only) was sent through a Sink. It carries a "
+                           "callable built off the loop, whose captures could dangle; send a plain message "
+                           "and make the change in update().\n", stderr);
+                std::abort();
+            }
+        }
         if (auto box = box_.lock()) return box->post(std::move(m));
         return false;
     }
+
 
     /// Is anyone still listening? Only a hint: the loop may stop right after.
     [[nodiscard]] bool open() const noexcept { return !box_.expired(); }
