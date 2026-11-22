@@ -245,7 +245,7 @@ struct durable {
     std::function<void(const typename P::Msg&)>     journal;
 };
 
-template <Program P, class H> int run(H& host, run_options opt, durable<P> d);
+template <Program P, class H> int run(H& host, run_options opt, durable<P> d, prog::flags_t<P> flags = {});
 
 /// What a host gets from run(): the reactor to watch its handles with, and
 /// a way to hand events to the program.
@@ -285,7 +285,7 @@ public:
     [[nodiscard]] reactor& native_reactor() noexcept { return r_; }
 
 private:
-    template <Program P2, class H2> friend int run(H2&, run_options, durable<P2>);
+    template <Program P2, class H2> friend int run(H2&, run_options, durable<P2>, prog::flags_t<P2>);
     basic_host_context(reactor& r, std::function<std::size_t(const event&)> e, std::function<void(int)> s)
         : r_(r), emit_(std::move(e)), stop_(std::move(s)) {}
     reactor&                                  r_;
@@ -404,7 +404,7 @@ consteval void check_hosts() {
 
 
 template <Program P, class H>
-int run(H& host, run_options opt, durable<P> d) {
+int run(H& host, run_options opt, durable<P> d, prog::flags_t<P> flags) {
     using KE = kernel_event_t<H>;
     using K  = kernel::kernel<P, KE, platform::steady_clock>;
     namespace pf = platform;
@@ -440,7 +440,7 @@ int run(H& host, run_options opt, durable<P> d) {
         if (d.resume)
             return K::start_from(fwd, std::move(*d.resume), std::move(d.resume_cmd),
                                  platform::steady_clock{}, opt.kernel, wake, std::move(d.journal));
-        return K::start(fwd, platform::steady_clock{}, opt.kernel, wake, std::move(d.journal));
+        return K::start(fwd, platform::steady_clock{}, opt.kernel, wake, std::move(d.journal), flags);
     }();
 
     // Shutdown order, owned by a destructor (kernel/teardown.hpp): signals

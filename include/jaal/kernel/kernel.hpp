@@ -281,10 +281,11 @@ public:
     template <class H>
     [[nodiscard]] static kernel start(H& host, C clock = {}, options opt = {},
                                       std::function<void()> wake = {},
-                                      std::function<void(const msg_type&)> record = {}) {
+                                      std::function<void(const msg_type&)> record = {},
+                                      const prog::flags_t<P>& flags = {}) {
         require_host_for<H, P>();
         detail::prog::check_hooks<P>();
-        auto [m, c] = prog::init<P>();
+        auto [m, c] = prog::init<P>(flags);
         return kernel(host, std::move(m), std::move(c), std::move(clock), opt,
                       std::move(wake), std::move(record));
     }

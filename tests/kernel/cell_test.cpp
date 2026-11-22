@@ -5,7 +5,10 @@
 #include <jaal/kernel/cell.hpp>
 #include <jaal/kernel/guarded.hpp>
 #include <jaal/kernel/lock_order.hpp>
+#include <jaal/kernel/waits_for.hpp>
 
+#include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -82,6 +85,26 @@ int main() {
     ok(!aborts([] { g_cache.with([](auto& m) { m.clear(); }); g_other.with([](int&) {}); }),
        "cell: one after the other is fine");
 
+    // jaal::lazy: built once, by exactly one of many racing threads, read by all
+    {
+        static jaal::lazy<std::vector<int>> table;
+        static std::atomic<int> builds{0};   // a lazy's build takes no lock (it runs as a leaf)
+        std::vector<std::jthread> ts;
+        std::array<long, 8> sums{};
+        for (int t = 0; t < 8; ++t)
+            ts.emplace_back([&sums, t] {
+                const auto& v = table.get([] { builds.fetch_add(1); return std::vector<int>(1000, 3); });
+                long s = 0;
+                for (int x : v) s += x;
+                sums[static_cast<std::size_t>(t)] = s;
+            });
+        ts.clear();
+        bool all = true;
+        for (long s : sums) all = all && s == 3000;
+        ok(builds.load() == 1 && all, "lazy: 8 racing threads, one build, all see it");
+        static_assert(jaal::Sync<jaal::lazy<std::vector<int>>>, "lazy is Sync");
+        static_assert(!jaal::Sendable<jaal::lazy<std::vector<int>>>, "lazy stays where it was made");
+    }
     if (failures == 0) std::printf("cell_test: ok\n");
     return failures == 0 ? 0 : 1;
 }

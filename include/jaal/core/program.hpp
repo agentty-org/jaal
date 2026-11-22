@@ -310,6 +310,15 @@ concept has_init = requires(typename P::Model& m) {
     { P::init(m) } -> std::convertible_to<typename P::Cmd>;
 };
 
+/// Does P take FLAGS -- the data its run starts with (a config, a font set,
+/// an argv) -- as `using Flags = ...; static Cmd init(Model&, const Flags&)`?
+template <class P>
+concept has_flags = requires { typename P::Flags; };
+template <class P>
+concept has_init_flags = has_flags<P> && requires(typename P::Model& m, const typename P::Flags& f) {
+    { P::init(m, f) } -> std::convertible_to<typename P::Cmd>;
+};
+
 // ── near-miss detection for optional hooks ─────────────────────────────
 //
 // Every optional hook (init, subscribe, subs_key, view, visual_hash,
@@ -546,7 +555,12 @@ consteval void check_hooks() {
             "static std::optional<Msg> on(const Model&, const E&) for each "
             "alternative of Event, or drop it from Event.");
     }
-    if constexpr (declares_init<P>) {
+    if constexpr (has_flags<P>) {
+        static_assert(has_init_flags<P>,
+            "jaal: P::Flags is declared, so P::init must take it: "
+            "static Cmd init(Model&, const Flags&). Flags are the data a run "
+            "starts with -- passed in, never read from a global.");
+    } else if constexpr (declares_init<P>) {
         static_assert(has_init<P>,
             "jaal: P::init is declared but its signature doesn't match "
             "the shape jaal calls. Expected: static Cmd init(Model&). "
@@ -602,11 +616,22 @@ consteval void check_hooks() {
 // ── calling a program: the only place that does ──────────────────────────
 namespace prog {
 
+/// The data a run of P starts with: P::Flags, or nothing.
+template <class P> struct flags_of { using type = std::monostate; };
+template <detail::prog::has_flags P> struct flags_of<P> { using type = typename P::Flags; };
+template <class P> using flags_t = typename flags_of<P>::type;
+
 /// A fresh model and its first Cmd (init, or a value-initialised Model).
+/// A program with Flags is initialised with `flags`; a test that has none to
+/// give gets value-initialised flags.
 template <Program P>
-[[nodiscard]] std::pair<typename P::Model, typename P::Cmd> init() {
+[[nodiscard]] std::pair<typename P::Model, typename P::Cmd> init(const flags_t<P>& flags = {}) {
     typename P::Model m{};
-    if constexpr (detail::prog::has_init<P>) {
+    if constexpr (detail::prog::has_flags<P>) {
+        typename P::Cmd c = P::init(m, flags);
+        return {std::move(m), std::move(c)};
+    } else if constexpr (detail::prog::has_init<P>) {
+        (void)flags;
         typename P::Cmd c = P::init(m);
         return {std::move(m), std::move(c)};
     } else {

@@ -15,12 +15,16 @@
 
 #include <atomic>
 #include <chrono>
+#include <concepts>
+#include <type_traits>
 #include <cstdint>
 #include <future>
 #include <mutex>
 #include <utility>
 
 #include "../core/capability.hpp"
+#include "../core/sendable.hpp"
+#include "../core/sync.hpp"
 
 namespace jaal {
 
@@ -61,6 +65,39 @@ void once(std::once_flag& flag, F&& body) {
         body();
     });
 }
+
+/// A value built on first use, exactly once, then read-only forever: the
+/// "lazy table" every parser has. Shared by any number of threads:
+///
+///     jaal::lazy<std::vector<Lookup>> lookups;
+///     const auto& v = lookups.get([&] { return build(); });   // first caller builds
+///
+/// get() runs `build` once (jaal::once: it may take no lock and never
+/// waits) and every caller after that -- on any thread -- sees the built
+/// value, read-only. Nothing else can write it, so it is Sync by
+/// construction, and a type holding lazies can be proven shareable.
+template <class T>
+class lazy {
+  public:
+    lazy() = default;
+    lazy(const lazy&) = delete;
+    lazy& operator=(const lazy&) = delete;
+
+    template <class F>
+        requires std::convertible_to<std::invoke_result_t<F&>, T>
+    [[nodiscard]] const T& get(F&& build) const {
+        once(flag_, [&] { value_ = build(); });
+        return value_;
+    }
+
+  private:
+    mutable std::once_flag flag_;
+    mutable T              value_{};   // written once, inside call_once; read after it
+};
+// Every access goes through get(): one write, under call_once, which happens-
+// before every read. (A lazy stays where it was made: not Sendable.)
+template <class T> inline constexpr bool sync_opt_in<lazy<T>> = true;
+template <class T> inline constexpr bool sendable_opt_out<lazy<T>> = true;
 
 /// atomic::wait(old), proven unlocked: a compare-exchange plus this is a
 /// hand-made lock, so it is held to a lock's rules.
