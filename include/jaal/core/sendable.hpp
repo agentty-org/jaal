@@ -50,6 +50,14 @@ inline constexpr bool sendable_opt_in = false;
 template <class T>
 inline constexpr bool sendable_opt_out = false;
 
+/// A message the loop may make but no Sink may carry: one that holds a
+/// callable whose captures jaal can't see (an app's "edit the model" lambda).
+/// It is a RESTRICTION, not a trust claim: such a type is never Sendable (it
+/// can't be a task argument, a stream argument, or shared), but it may sit in
+/// a Msg -- see Postable -- because the Sink refuses it (core/sink.hpp).
+template <class T>
+inline constexpr bool loop_only = false;
+
 // ── the policy ───────────────────────────────────────────────────────────
 namespace detail {
 
@@ -92,6 +100,18 @@ struct sendable_policy {
 template <class T>
 using sendable_run = walk::run<sendable_policy, std::remove_cv_t<T>>;
 
+// Postable: Sendable, except that a loop-only alternative is accepted -- it
+// never crosses threads, because every Sink refuses it.
+struct postable_policy : sendable_policy {
+    template <class T>
+    static consteval auto classify() {
+        if constexpr (loop_only<std::remove_cv_t<T>>) return walk::decision::accept{};
+        else return sendable_policy::template classify<T>();
+    }
+};
+template <class T>
+using postable_run = walk::run<postable_policy, std::remove_cv_t<T>>;
+
 }  // namespace detail
 
 // ── public API ───────────────────────────────────────────────────────────
@@ -109,6 +129,18 @@ concept Sendable =
     std::is_object_v<T>          // no references, no functions, no void
     && std::movable<T>
     && sendable_v<T>;
+
+/// May T be a program's MESSAGE? Sendable, plus loop-only alternatives
+/// (which the Sink keeps on the loop). Every Msg must be Postable; anything
+/// that really crosses threads -- task and stream arguments, shared values,
+/// lock-body arguments -- must be Sendable.
+template <class T>
+concept Postable =
+    std::is_object_v<T> && std::movable<T> && !std::is_reference_v<T> && detail::postable_run<T>::ok;
+
+/// The innermost type that makes T non-Postable; void if T is Postable.
+template <class T>
+using postable_culprit_t = typename detail::postable_run<T>::culprit;
 
 /// A sentence explaining why T isn't Sendable, for static_assert.
 template <class T>

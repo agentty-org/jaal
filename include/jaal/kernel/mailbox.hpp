@@ -92,7 +92,7 @@ struct mailbox_stats {
     std::size_t   high_water = 0;             // most messages ever queued at once
 };
 
-template <Sendable Msg>
+template <Postable Msg>
 class mailbox final : public detail::mailbox_iface<Msg> {
 public:
     using msg_type = Msg;
@@ -339,7 +339,7 @@ private:
 };
 
 /// Owns a mailbox and hands out sinks to it. The kernel holds one of these.
-template <Sendable Msg>
+template <Postable Msg>
 class inbox {
 public:
     explicit inbox(std::function<void()> wake = {}, mailbox_options opt = {})

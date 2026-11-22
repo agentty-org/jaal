@@ -436,7 +436,7 @@ concept Program =
     && std::movable<typename P::Model>
     && std::default_initializable<typename P::Model>
     && detail::prog::is_variant_v<typename P::Msg>
-    && Sendable<typename P::Msg>
+    && Postable<typename P::Msg>
     && detail::cmd::is_cmd_v<typename P::Cmd>
     && std::same_as<typename P::Cmd::msg_type, typename P::Msg>
     && detail::prog::updates_every_case<P, typename P::Msg>;

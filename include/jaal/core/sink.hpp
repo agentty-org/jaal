@@ -48,17 +48,8 @@ struct mailbox_iface {
 };
 }  // namespace detail
 
-/// A message that may only be made ON the loop thread: one that carries a
-/// callable whose captures jaal can't see (an app's "edit the model" lambda),
-/// so built on a worker it could point at the worker's stack. It may sit in
-/// a Msg -- the loop builds and folds it in place -- but it can NEVER be
-/// posted through a Sink, the door every task, stream and outside thread
-/// uses:
-///   * sending one directly (`out.send(MyEdit{...})`) does not compile;
-///   * sending one inside a bigger Msg aborts on the first attempt, naming
-///     the rule -- never a dangling capture that works until it doesn't.
-template <class T>
-inline constexpr bool loop_only = false;
+// (loop_only<T> is declared in sendable.hpp: a message the loop may make
+// but no Sink may carry. send() below enforces it.)
 
 namespace detail::loop_only_ {
 template <class M> struct alts { using type = void; };
@@ -91,7 +82,7 @@ struct sink_access;   // the kernel's key
 
 template <class Msg>
 class Sink {
-    static_assert(Sendable<Msg>, "jaal: a Sink's Msg must be Sendable "
+    static_assert(Postable<Msg>, "jaal: a Sink's Msg must be Postable (Sendable, or loop-only) "
                                  "(see jaal::sendable_reason<Msg>())");
 public:
     using msg_type = Msg;

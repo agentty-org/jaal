@@ -232,7 +232,7 @@ jaal_compile_fail(NAME isolated_arg_sendable SOURCE compile_fail/task_isolated.c
 jaal_compile_fail(NAME isolated_body_shape   SOURCE compile_fail/task_isolated.cpp CASE 3
                   MATCH "jaal: a task body must be callable as")
 jaal_compile_fail(NAME sink_msg_sendable     SOURCE compile_fail/cmd.cpp CASE 6
-                  MATCH "jaal: a Sink's Msg must be Sendable")
+                  MATCH "jaal: a Sink's Msg must be Postable")
 jaal_compile_fail(NAME perform_no_capture    SOURCE compile_fail/cmd.cpp CASE 7
                   MATCH "jaal: a perform body must not capture anything")
 jaal_compile_fail(NAME perform_arg_sendable  SOURCE compile_fail/cmd.cpp CASE 8
