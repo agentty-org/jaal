@@ -33,7 +33,7 @@ host/given.hpp: sink_access
 # (`thread` dropped: the mailbox only names std::thread::ID, it never spawns
 # one. The banlist's `thread` pattern matches a spawn, so the grant was
 # always unused — it just went unreported until the rot check was wired up.)
-kernel/mailbox.hpp: mutex sink_access atomic
+kernel/mailbox.hpp: mutex sink_access atomic condvar
 # loop_key is defined here.
 #
 # `thread_local`: the armed-loop-identity depth. "Am I on a loop thread?" is
@@ -52,7 +52,7 @@ kernel/mailbox.hpp: mutex sink_access atomic
 kernel/loop.hpp: loop_key thread_local loop_arm
 # The worker pool: threads, the job queue lock, and detached isolated threads.
 # `future`: job_result wraps the promise's future behind get(unlocked).
-kernel/pool.hpp: thread detach mutex cap_mint future
+kernel/pool.hpp: thread detach mutex cap_mint future condvar
 # scope: joins every helper thread; `observed` is an atomic flag per helper.
 kernel/scope.hpp: thread atomic cap_mint
 # strays: one process-wide counter of threads a shutdown gave up on.
@@ -66,16 +66,16 @@ kernel/lock_order.hpp: thread_local
 # cell<T>: the leaf lock's shared_mutex (its body can reach no other lock).
 kernel/cell.hpp: mutex
 # guarded<T>: the shared_mutex it wraps.
-kernel/guarded.hpp: mutex cap_mint
+kernel/guarded.hpp: mutex cap_mint condvar
 # delay_for: condition_variable_any needs a Lockable to wait on, so the mutex
 # is a formality rather than a guard — nothing else can reach it, it is never
 # contended, and the shared state it "protects" is the stop_token. The whole
 # point of the function is that subsystems stop declaring one of these (plus a
 # condition variable and a stop flag) just to express a duration.
-kernel/delay.hpp: mutex
+kernel/delay.hpp: mutex condvar
 # stop_group: the count, the closed flag and the cv that wakes stop_and_wait
 # when the last member leaves. It IS the registry hosts used to hand-roll.
-kernel/stop_group.hpp: mutex
+kernel/stop_group.hpp: mutex condvar
 # published<T>: std::atomic<std::shared_ptr<T>> IS the implementation of the
 # swap-the-current-object slot (one atomic load per reader, no lock).
 kernel/published.hpp: atomic mutex

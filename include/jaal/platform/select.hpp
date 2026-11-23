@@ -1,4 +1,5 @@
 #pragma once
+#include <jaal/meta/target.hpp>
 // jaal::platform::native_reactor / native_signals / native_file_lock — the
 // backends for the OS this is being compiled for.
 //
@@ -16,7 +17,7 @@
 #include "process.hpp"
 #include "signal.hpp"
 
-#if defined(_WIN32)
+#if JAAL_OS_WINDOWS
 #  include "windows/console_signals.hpp"
 #  include "windows/file_lock.hpp"
 #  include "windows/process.hpp"
@@ -27,7 +28,7 @@ using native_signals   = console_signals;
 using native_file_lock = windows_file_lock;
 using native_process   = windows_process;
 }  // namespace jaal::platform
-#elif defined(__linux__)
+#elif JAAL_OS_LINUX
 #  include "linux/epoll_reactor.hpp"
 #  include "posix/file_lock.hpp"
 #  include "posix/process.hpp"
@@ -38,7 +39,7 @@ using native_signals   = posix_signals;
 using native_file_lock = posix_file_lock;
 using native_process   = posix_process;
 }  // namespace jaal::platform
-#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+#elif JAAL_OS_APPLE || JAAL_OS_FREEBSD || JAAL_OS_NETBSD || JAAL_OS_OPENBSD
 #  include "darwin/kqueue_reactor.hpp"
 #  include "posix/file_lock.hpp"
 #  include "posix/process.hpp"
@@ -49,7 +50,7 @@ using native_signals   = posix_signals;
 using native_file_lock = posix_file_lock;
 using native_process   = posix_process;
 }  // namespace jaal::platform
-#elif defined(__unix__)
+#elif JAAL_OS_UNIX
 #  include "posix/file_lock.hpp"
 #  include "posix/poll_reactor.hpp"
 #  include "posix/process.hpp"

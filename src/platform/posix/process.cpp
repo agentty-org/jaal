@@ -9,6 +9,7 @@
 // failed", which is a distinction the caller can act on and a bare exit code
 // cannot express.
 
+#include <jaal/meta/target.hpp>
 #include "jaal/platform/posix/process.hpp"
 
 #include <cerrno>
@@ -20,11 +21,11 @@
 
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
-#if defined(__linux__)
-#  include <sys/eventfd.h>
+#if JAAL_OS_LINUX
 #  include <sys/syscall.h>
 #endif
 
@@ -40,7 +41,7 @@ namespace {
 /// a bounded loop otherwise.
 void close_fds_above_stderr(int a, int b) noexcept {
     if (a > b) { const int t = a; a = b; b = t; }   // a <= b; -1 sorts first
-#if defined(__linux__) && defined(SYS_close_range)
+#if JAAL_OS_LINUX && defined(SYS_close_range)
     unsigned lo = 3;
     bool ok = true;
     for (int k : {a, b}) {
@@ -65,7 +66,7 @@ struct pipe_pair {
 
     [[nodiscard]] bool open(bool cloexec) {
         int fds[2];
-#if defined(__linux__)
+#if JAAL_OS_LINUX
         if (::pipe2(fds, cloexec ? O_CLOEXEC : 0) != 0) return false;
 #else
         if (::pipe(fds) != 0) return false;
@@ -83,7 +84,7 @@ struct pipe_pair {
     void close_both()  { close_read(); close_write(); }
 };
 
-#if defined(__linux__)
+#if JAAL_OS_LINUX
 [[nodiscard]] int open_pidfd(::pid_t pid) {
     return static_cast<int>(::syscall(SYS_pidfd_open, pid, 0u));
 }
@@ -94,20 +95,24 @@ struct pipe_pair {
     if (pidfd < 0) return false;
     return ::syscall(SYS_pidfd_send_signal, pidfd, sig, nullptr, 0u) == 0;
 }
+#endif
 
-/// The exit as a handle when there is no pidfd: pidfd_open is missing
-/// (kernel < 5.3) or denied (a seccomp policy, some containers).
+/// The exit as a handle, exactly: the LEADER's exit, not "every process
+/// that inherited a pipe let go". Linux uses a pidfd when it has one; every
+/// other POSIX system (and Linux without pidfd_open: kernel < 5.3, seccomp)
+/// uses this, the one portable design. (Off Linux it replaced a "death pipe"
+/// the child inherited, which a backgrounded grandchild -- `(sleep 20 &)` --
+/// held open: the exit handle then fired only when the grandchild died, and
+/// every caller waited out its deadline.)
 ///
-/// A thread blocks in waitid(WNOWAIT) on this one pid and then signals an
-/// eventfd. That keeps every property the pidfd had:
+/// A thread blocks in waitid(WNOWAIT) on this one pid and then writes a
+/// byte to a pipe. That keeps every property a pidfd has:
 ///   * exact: waitid names the leader, so a grandchild still holding the
-///     output pipe can't hold the exit back (a death pipe would)
-///   * level-triggered: nobody reads the counter, so it stays readable
+///     output pipe can't hold the exit back
+///   * level-triggered: nobody reads the byte, so it stays readable
 ///   * WNOWAIT leaves the child waitable, so reap() still gets the status;
 ///     reap() only calls waitpid once the event fired, so the pid can't be
 ///     freed and reused while the watcher still waits on it
-/// Without it the exit handle was -1, a reactor watch of it failed, and
-/// every caller waited out its deadline instead.
 ///
 /// Ownership of the reap: the process object reaps, unless it is destroyed
 /// first. Either way it tells the watcher through `gone`: a byte means "I
@@ -117,28 +122,51 @@ struct pipe_pair {
 ///
 /// Returns our read end and the "gone" write end, or {-1,-1}.
 struct exit_watch { int ev = -1; int gone = -1; };
+/// A channel for the watcher that can NEVER raise SIGPIPE: a socketpair,
+/// written with send(MSG_NOSIGNAL) where the OS has it (Linux) and with
+/// SO_NOSIGPIPE set on the socket where it has that instead (macOS, BSDs).
+/// A plain pipe raises SIGPIPE on a write after its reader closed (the owner
+/// destroyed first); blocking the signal in the writing thread does not
+/// help on macOS -- a thread-pending SIGPIPE left when the detached thread
+/// ends is re-delivered to the PROCESS, which then dies at its next fork.
+[[nodiscard]] bool quiet_channel(int fds[2]) {
+#if JAAL_OS_LINUX
+    if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds) != 0) return false;
+#else
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) return false;
+    for (int i = 0; i < 2; ++i) {
+        ::fcntl(fds[i], F_SETFD, FD_CLOEXEC);
+        const int one = 1;
+        (void)::setsockopt(fds[i], SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+    }
+#endif
+    return true;
+}
+/// One byte down a quiet channel: EPIPE, never a signal.
+void quiet_write(int fd) {
+    const char one = 1;
+#if JAAL_OS_LINUX
+    while (::send(fd, &one, 1, MSG_NOSIGNAL) < 0 && errno == EINTR) {}
+#else
+    while (::write(fd, &one, 1) < 0 && errno == EINTR) {}
+#endif
+}
 [[nodiscard]] exit_watch start_exit_watcher(::pid_t pid) {
     exit_watch w;
-    const int ev = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
-    if (ev < 0) return w;
-    const int ev_theirs = ::fcntl(ev, F_DUPFD_CLOEXEC, 0);
-    int gone[2] = {-1, -1};
-    if (ev_theirs < 0 || ::pipe2(gone, O_CLOEXEC) != 0) {
-        ::close(ev);
-        if (ev_theirs >= 0) ::close(ev_theirs);
-        return w;
-    }
+    int ev[2] = {-1, -1}, gone[2] = {-1, -1};
+    if (!quiet_channel(ev)) return w;
+    if (!quiet_channel(gone)) { ::close(ev[0]); ::close(ev[1]); return w; }
+    ::fcntl(ev[0], F_SETFL, O_NONBLOCK);
     try {
         // Detached on purpose: it ends when the child does, and a destructor
         // that joined it could hang on a child that won't die.
-        std::thread([pid, ev_theirs, gone_r = gone[0]] {
+        std::thread([pid, ev_theirs = ev[1], gone_r = gone[0]] {
             siginfo_t si{};
             while (::waitid(P_PID, static_cast<id_t>(pid), &si, WEXITED | WNOWAIT) < 0
                    && errno == EINTR) {}
             // Fired on ECHILD too: whatever happened, nobody can wait for it
             // now, and a handle that never fires is the bug this replaces.
-            const std::uint64_t one = 1;
-            while (::write(ev_theirs, &one, sizeof one) < 0 && errno == EINTR) {}
+            quiet_write(ev_theirs);
             ::close(ev_theirs);
             // Now the owner may reap. If it already let go, nobody will:
             // the zombie is ours to collect. Wait for the owner to decide.
@@ -153,13 +181,10 @@ struct exit_watch { int ev = -1; int gone = -1; };
             }               // a byte: the owner reaped it
         }).detach();
     } catch (...) {
-        ::close(ev_theirs);
-        ::close(ev);
-        ::close(gone[0]);
-        ::close(gone[1]);
+        for (int fd : {ev[0], ev[1], gone[0], gone[1]}) ::close(fd);
         return w;
     }
-    w.ev = ev;
+    w.ev = ev[0];
     w.gone = gone[1];
     return w;
 }
@@ -169,7 +194,6 @@ struct exit_watch { int ev = -1; int gone = -1; };
     pollfd pfd{fd, POLLIN, 0};
     return ::poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN);
 }
-#endif
 
 /// Write all of `n` bytes, retrying EINTR. Async-signal-safe: no allocation,
 /// no stdio.
@@ -191,11 +215,11 @@ struct posix_process::impl {
     pipe_pair out;       ///< child stdout (we hold the read end)
     pipe_pair err;       ///< child stderr
     pipe_pair in;        ///< child stdin (we hold the write end)
-    pipe_pair death;     ///< non-Linux exit signal (we hold the read end)
 
-    native_handle pidfd = invalid_handle;   ///< Linux exit signal
-    /// Linux without a pidfd: the eventfd the exit watcher signals, and the
-    /// pipe that tells it who reaps (a byte: we did; EOF: it must).
+    native_handle pidfd = invalid_handle;   ///< Linux: the exit as a pidfd
+    /// Without a pidfd (every other POSIX system; old Linux): the pipe the
+    /// exit watcher writes, and the pipe that tells it who reaps (a byte:
+    /// we did; EOF: it must).
     native_handle exit_ev   = invalid_handle;
     native_handle exit_gone = invalid_handle;
 
@@ -212,7 +236,6 @@ struct posix_process::impl {
         out.close_both();
         err.close_both();
         in.close_both();
-        death.close_both();
         // A child we never reaped would become a zombie held by this
         // process for its lifetime. Best effort: ask it to go, then reap
         // without blocking. We do NOT wait — a destructor that can hang is
@@ -220,7 +243,7 @@ struct posix_process::impl {
         // closed fd number could hit whatever another thread opened there.
         if (pid > 0 && !reaped) {
             if (leads_own_group()) ::kill(-pid, SIGKILL);
-#if defined(__linux__)
+#if JAAL_OS_LINUX
             if (!signal_via_pidfd(pidfd, SIGKILL)) ::kill(pid, SIGKILL);
 #else
             ::kill(pid, SIGKILL);
@@ -229,10 +252,7 @@ struct posix_process::impl {
             // once we let go (the exit_gone EOF below), so we must not: a
             // reap here would free the number while it still waits on it.
             int st = 0;
-#if defined(__linux__)
-            if (!is_valid(exit_gone))
-#endif
-                ::waitpid(pid, &st, WNOHANG);
+            if (!is_valid(exit_gone)) ::waitpid(pid, &st, WNOHANG);
         }
         if (is_valid(pidfd)) close_handle(pidfd);
         if (is_valid(exit_ev)) close_handle(exit_ev);
@@ -251,15 +271,18 @@ struct posix_process::impl {
 
     [[nodiscard]] native_handle exit_fd() const {
         if (is_valid(pidfd)) return pidfd;
-        if (is_valid(exit_ev)) return exit_ev;
-        return death.r;
+        return exit_ev;
     }
 
-#if defined(__linux__)
-    /// Make the exit watchable: the pidfd if the kernel gives one, else a
-    /// watcher. False only when neither could be had.
+    /// Make the exit watchable, exactly: the pidfd where Linux gives one,
+    /// else the watcher (every other POSIX system). False only when neither
+    /// could be had.
     [[nodiscard]] bool watch_exit(int given_pidfd) {
+#if JAAL_OS_LINUX
         pidfd = given_pidfd >= 0 ? given_pidfd : open_pidfd(pid);
+#else
+        if (given_pidfd >= 0) close_handle(given_pidfd);   // no pidfds here
+#endif
         if (!is_valid(pidfd)) {
             const auto w = start_exit_watcher(pid);
             exit_ev   = w.ev;
@@ -273,12 +296,10 @@ struct posix_process::impl {
     /// We reaped it: tell the watcher, so it doesn't reap a reused pid.
     void reaped_by_us() {
         if (!is_valid(exit_gone)) return;
-        const char b = 1;
-        while (::write(exit_gone, &b, 1) < 0 && errno == EINTR) {}
+        quiet_write(exit_gone);
         close_handle(exit_gone);
         exit_gone = invalid_handle;
     }
-#endif
 };
 
 posix_process::posix_process() : p_(std::make_unique<impl>()) {}
@@ -314,13 +335,6 @@ result<posix_process> posix_process::spawn(const process_spec& spec) {
     if (!report.open(true))
         return std::unexpected(error::from_errno(errno, "posix_process: pipe"));
 
-#if !defined(__linux__)
-    // Death pipe: NOT cloexec, because the child must keep it across exec.
-    if (!s.death.open(false)) {
-        report.close_both();
-        return std::unexpected(error::from_errno(errno, "posix_process: pipe"));
-    }
-#endif
 
     // Build argv/envp BEFORE fork: the child cannot allocate. Mutable
     // copies rather than casting away const on the caller's strings --
@@ -390,20 +404,15 @@ result<posix_process> posix_process::spawn(const process_spec& spec) {
 
         // Close everything above stderr. A descriptor the parent opened
         // without O_CLOEXEC (a log, a credential store, another library's
-        // socket) would otherwise reach the program. Two are kept: the
-        // report pipe (close-on-exec, so a failed exec can still say why)
-        // and, off Linux, the death pipe the child must hold across exec.
+        // socket) would otherwise reach the program. One is kept: the report
+        // pipe (close-on-exec, so a failed exec can still say why).
         {
-            int keep[2] = {report.w, -1};
-#if !defined(__linux__)
-            keep[1] = s.death.w;
-#endif
-            close_fds_above_stderr(keep[0], keep[1]);
+            close_fds_above_stderr(report.w, -1);
         }
 
         if (envp.empty()) ::execvp(argv[0], argv.data());
         else {
-#if defined(__linux__)
+#if JAAL_OS_LINUX
             ::execvpe(argv[0], argv.data(), envp.data());
 #else
             // No execvpe off glibc. Swapping environ is a single pointer
@@ -423,11 +432,6 @@ result<posix_process> posix_process::spawn(const process_spec& spec) {
     s.out.close_write();
     s.err.close_write();
     s.in.close_read();
-    s.death.close_write();         // the child holds the only other copy
-
-#if !defined(__linux__)
-    s.exit_exact = false;
-#endif
 
     // Did exec happen? Empty ⇒ yes. errno ⇒ it never ran.
     int child_errno = 0;
@@ -450,11 +454,7 @@ result<posix_process> posix_process::spawn(const process_spec& spec) {
 
     // Only now, with exec confirmed: a watcher started earlier would race
     // the failed-exec reap above for the same pid.
-#if defined(__linux__)
     const bool watched = s.watch_exit(-1);
-#else
-    const bool watched = is_valid(s.death.r);
-#endif
     if (!watched) {
         // Never hand back a child whose exit can't be observed: every caller
         // would wait for it until a deadline, or forever. ~impl kills it.
@@ -490,23 +490,16 @@ result<posix_process> posix_process::adopt(adopted_child c) {
     s.err.r  = c.merged ? invalid_handle : c.stderr_fd;
     s.in.w   = c.stdin_fd;
 
-#if defined(__linux__)
-    // Prefer the spawner's pidfd; open one, or start a watcher, otherwise.
+    // Prefer the spawner's pidfd (Linux); open one, or start a watcher.
     // All three name THIS child and survive pid reuse, which matters more
     // here than for our own fork(): an adopted pid came from code we did not
     // write. (The watcher works because a spawner that forks or clones hands
     // us its own child, which waitid can wait for.)
     const bool watched = s.watch_exit(c.pidfd);
-#else
-    if (c.pidfd >= 0) close_handle(c.pidfd);
-    s.exit_exact = false;
-    const bool watched = false;
-#endif
 
     if (!watched) {
-        // No watchable exit, and we cannot retrofit a death pipe: that needs
-        // a descriptor the child inherited, and this child was already
-        // running before we were asked. Refuse rather than hand back a
+        // No watchable exit (no pidfd, and no thread for a watcher). Refuse
+        // rather than hand back a
         // process whose exit_handle() never fires -- a caller waiting on it
         // would hang forever, which is worse than a clear failure here.
         return std::unexpected(error::make(
@@ -554,7 +547,7 @@ result<void> posix_process::stop(stop_mode mode, stop_scope scope) {
         if (errno != ESRCH)
             return std::unexpected(error::from_errno(errno, "posix_process: killpg"));
     }
-#if defined(__linux__)
+#if JAAL_OS_LINUX
     // Preferred for the leader: unambiguous, and correct across namespaces.
     if (signal_via_pidfd(p_->pidfd, sig)) return {};
 #endif
@@ -569,29 +562,16 @@ result<exit_status> posix_process::reap() {
         return std::unexpected(error::make(std::errc::no_such_process,
                                            "posix_process: nothing to reap"));
     int st = 0;
-#if defined(__linux__)
     // With a watcher, the pid may only be reaped once it has seen the exit:
     // reaping first frees the pid while the watcher still waits on it, and a
     // new process could take the number. Before that, the child is running.
+    // Once it fired, waitid(WNOWAIT) has already seen the child waitable, so
+    // the reap below cannot miss it (the old death pipe fired BEFORE that and
+    // needed a blocking reap). A pidfd likewise fires only once waitable.
     if (!is_valid(p_->pidfd) && is_valid(p_->exit_ev) && !watcher_fired(p_->exit_ev))
         return std::unexpected(error::make(std::errc::operation_would_block,
                                            "posix_process: still running"));
-#endif
-    // Off Linux the exit signal is the death pipe, and it fires when the
-    // child's last copy of the write end closes -- during exit, slightly
-    // BEFORE the kernel makes the pid waitable. A WNOHANG reap right after
-    // the pipe fires can therefore see "still running" for a child that is
-    // already gone (macOS hits this every few runs; a caller that marks the
-    // child reaped on the strength of the signal then loses the exit code).
-    // So when the inexact signal has fired, the exit is imminent: block for
-    // it. A pidfd (exit_exact) fires only once the child is waitable, so
-    // Linux keeps the pure non-blocking reap.
-    const bool death_fired = [&] {
-        if (p_->exit_exact || !is_valid(p_->death.r)) return false;
-        pollfd pfd{p_->death.r, POLLIN, 0};
-        return ::poll(&pfd, 1, 0) > 0 && (pfd.revents & (POLLIN | POLLHUP));
-    }();
-    const int flags = death_fired ? 0 : WNOHANG;
+    const int flags = WNOHANG;
     for (;;) {
         const auto r = ::waitpid(p_->pid, &st, flags);
         if (r < 0 && errno == EINTR) continue;
@@ -607,9 +587,7 @@ result<exit_status> posix_process::reap() {
     else if (WIFSIGNALED(st))
         p_->status = exit_status{exit_status::kind::signalled, WTERMSIG(st)};
     p_->reaped = true;
-#if defined(__linux__)
     p_->reaped_by_us();
-#endif
     return p_->status;
 }
 

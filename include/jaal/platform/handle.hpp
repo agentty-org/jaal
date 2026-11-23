@@ -1,4 +1,5 @@
 #pragma once
+#include <jaal/meta/target.hpp>
 // jaal::platform::owned_handle / borrowed_handle — an OS handle as a linear
 // resource.
 //
@@ -34,7 +35,7 @@ namespace jaal::platform {
 // int on POSIX, HANDLE (void*) on Windows: the same type each reactor
 // already declares as `Reactor::handle`, so a handle can be watched without
 // a cast. Spelled here without <windows.h>, which is the point.
-#if defined(_WIN32)
+#if JAAL_OS_WINDOWS
 using native_handle = void*;
 inline constexpr native_handle invalid_handle = nullptr;
 #else
@@ -43,7 +44,7 @@ inline constexpr native_handle invalid_handle = -1;
 #endif
 
 [[nodiscard]] constexpr bool is_valid(native_handle h) noexcept {
-#if defined(_WIN32)
+#if JAAL_OS_WINDOWS
     // INVALID_HANDLE_VALUE is (HANDLE)-1 as well as null; both mean "no".
     return h != nullptr && h != reinterpret_cast<native_handle>(-1);
 #else

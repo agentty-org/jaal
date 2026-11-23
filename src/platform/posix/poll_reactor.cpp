@@ -1,6 +1,7 @@
 // jaal::platform::poll_reactor — implementation. The only file that sees
 // <poll.h>, <unistd.h> and friends for this backend.
 
+#include <jaal/meta/target.hpp>
 #include <jaal/platform/posix/poll_reactor.hpp>
 
 #include <algorithm>
@@ -14,7 +15,7 @@
 #include <poll.h>
 #include <unistd.h>
 
-#if defined(__linux__)
+#if JAAL_OS_LINUX
 #  include <sys/eventfd.h>
 #endif
 
@@ -30,14 +31,14 @@ struct wake_fds {
 };
 
 result<wake_fds> make_wake() {
-#if defined(__linux__)
+#if JAAL_OS_LINUX
     // eventfd: one fd, one syscall to signal, one to drain. Falls back to a
     // pipe when it's filtered (seccomp) or the fd table is tight.
     if (int e = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC); e >= 0)
         return wake_fds{e, e, true};
 #endif
     int p[2];
-#if defined(__linux__)
+#if JAAL_OS_LINUX
     if (::pipe2(p, O_NONBLOCK | O_CLOEXEC) != 0)
         return std::unexpected(error::from_errno(errno, "pipe2 for reactor wake"));
 #else
@@ -64,7 +65,7 @@ void drain_wake(const wake_fds& w) noexcept {
 
 // ppoll waits to the nanosecond (Linux, the BSDs, Android). The timespec
 // can't wrap: a chrono count fits a time_t of seconds.
-#if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || \
+#if JAAL_OS_LINUX || JAAL_OS_FREEBSD || JAAL_OS_OPENBSD || \
     defined(__NetBSD__) || defined(__ANDROID__)
 #  define JAAL_HAVE_PPOLL 1
 #endif

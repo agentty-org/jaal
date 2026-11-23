@@ -1,4 +1,5 @@
 #pragma once
+#include <jaal/meta/target.hpp>
 // jaal::meta::fields — the field types of a plain struct, at compile time.
 //
 // The one piece of "reflection" jaal needs. C++26 structured binding packs
@@ -47,7 +48,7 @@ namespace jaal::meta {
 // Android are the exceptions on shallow rules: Termux and the NDK ship clang
 // 21, one release short of P1061, and the same sources are proven deeply by
 // the GCC and clang CI legs. Everything else needs C++26.
-#if !JAAL_HAS_FIELDS && !defined(_MSC_VER) && !defined(__ANDROID__)
+#if !JAAL_HAS_FIELDS && !defined(_MSC_VER) && !JAAL_OS_ANDROID
 #  error "jaal needs C++26 structured binding packs (P1061) to check messages are Sendable: build with -std=c++26 (or -std=c++2c) on GCC 16+ or clang 22+."
 #endif
 

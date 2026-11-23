@@ -17,6 +17,7 @@
 #include <thread>
 #include <vector>
 
+#include <csignal>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -31,7 +32,10 @@ jaal::cell<int>                         g_other;
 using outer_rank = jaal::rank<10, "test.cell_outer">;
 jaal::guarded<int, outer_rank>          g_outer;
 
-/// Run f in a child process: did it abort (SIGABRT)?
+/// Run f in a child process: did it abort (SIGABRT)? Bounded: a child that
+/// neither aborts nor exits in 5 s is killed and counts as "did not abort"
+/// -- this is the check for self-deadlocks, so it must never become one
+/// (cell's re-entry check used to run after the lock and hung right here).
 template <class F>
 bool aborts(F f) {
     const pid_t pid = ::fork();
@@ -41,8 +45,14 @@ bool aborts(F f) {
         std::_Exit(0);
     }
     int st = 0;
+    for (int i = 0; i < 500; ++i) {
+        if (::waitpid(pid, &st, WNOHANG) == pid) return WIFSIGNALED(st) && WTERMSIG(st) == SIGABRT;
+        ::usleep(10000);
+    }
+    ::kill(pid, SIGKILL);
     ::waitpid(pid, &st, 0);
-    return WIFSIGNALED(st) && WTERMSIG(st) == SIGABRT;
+    std::fprintf(stderr, "FAIL: a child that should have aborted hung (killed after 5 s)\n");
+    return false;
 }
 }  // namespace
 

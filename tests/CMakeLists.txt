@@ -503,6 +503,14 @@ add_test(NAME banlist_src
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/lint/banlist.cmake)
 set_tests_properties(banlist_src PROPERTIES LABELS "static")
 
+# ── one_os: the OS is read in one file (platform/target.hpp) ───────────────────────
+add_test(NAME one_os
+         COMMAND ${CMAKE_COMMAND}
+                 "-DROOTS=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/src"
+                 -DSOURCE=${PROJECT_SOURCE_DIR}/include/jaal/meta/target.hpp
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/lint/one_os.cmake)
+set_tests_properties(one_os PROPERTIES LABELS "static")
+
 # ── allowlist rot: a grant that no longer earns its keep ──────────────────
 #
 # prune_allowlist.cmake lived here but was never REGISTERED, so nothing ran

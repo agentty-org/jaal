@@ -76,19 +76,24 @@ class cell {
     cell& operator=(const cell&) = delete;
 
     /// Exclusive: body(T&, args...). Captureless body, Sendable args and result.
+    ///
+    /// The nesting check (`enter`) comes BEFORE the lock: re-entering this
+    /// same cell from its own body must abort, and with the lock first it
+    /// blocked forever on the mutex the thread already held -- the very
+    /// self-deadlock the check exists to turn into an immediate failure.
     template <class F, class... Args>
     auto with(F f, Args... args) -> std::invoke_result_t<F&, T&, Args&&...> {
         check<F, T&, Args...>();
-        std::unique_lock lk(m_);
         const detail::cell_::enter in;
+        std::unique_lock lk(m_);
         return f(value_, std::move(args)...);
     }
-    /// Shared: body(const T&, args...); readers run together.
+    /// Shared: body(const T&, args...); readers run together. Same order.
     template <class F, class... Args>
     auto read(F f, Args... args) const -> std::invoke_result_t<F&, const T&, Args&&...> {
         check<F, const T&, Args...>();
-        std::shared_lock lk(m_);
         const detail::cell_::enter in;
+        std::shared_lock lk(m_);
         return f(value_, std::move(args)...);
     }
 

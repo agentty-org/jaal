@@ -7,13 +7,14 @@
 // used to make "has ended" watchable. Everything a test observes about
 // timing is a step it asked for.
 
+#include <jaal/meta/target.hpp>
 #include "jaal/platform/sim/process.hpp"
 
 #include <cerrno>
 #include <cstdlib>
 #include <utility>
 
-#if defined(_WIN32)
+#if JAAL_OS_WINDOWS
 #  error "sim_process is POSIX-only for now; the Windows backend lands with wait_reactor support"
 #else
 #  include <fcntl.h>

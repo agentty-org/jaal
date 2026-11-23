@@ -194,6 +194,17 @@ struct options {
     /// and step (kernel/trace.hpp). One branch per event when unset.
     trace_hook trace;
 
+    /// How long ONE fold may take -- update() plus the rollback copy the
+    /// fault policy makes before it -- before the kernel calls it slow. The
+    /// loop thread is the UI: a fold over budget is a dropped frame or a
+    /// stuck key. Every such fold is reported to `slow` (or one line to
+    /// stderr, at most once a second per message type) with the message's
+    /// variant index and how long it took, whether or not `trace` is set, so
+    /// a regression names itself instead of hiding in a profile. Counted in
+    /// slow_folds(). 0 = no budget.
+    std::chrono::microseconds fold_budget_time{8000};
+    std::function<void(std::size_t msg_index, std::chrono::nanoseconds took)> slow;
+
     /// The seed for Cmd::random. 0 (the default) means "pick one": the
     /// kernel draws from the OS so a real run differs each time, and
     /// REPORTS it through seed_used() so a run can be reproduced by passing
@@ -511,6 +522,8 @@ public:
 
     /// Faults reported so far (update, subscribe, effect or task).
     [[nodiscard]] std::uint64_t fault_count() const noexcept { return faults_; }
+    /// Folds that took longer than options::fold_budget_time.
+    [[nodiscard]] std::uint64_t slow_folds() const noexcept { return slow_folds_; }
 
     /// Mailbox load: drops, blocked sends, high-water mark.
     [[nodiscard]] mailbox_stats mailbox_load() const { return inbox_.stats(); }
@@ -668,6 +681,7 @@ private:
     // turns `skip` into `stop` for it and says so).
     template <class H>
     bool fold_one(msg_type msg, H& host) {
+        const auto t_fold = std::chrono::steady_clock::now();   // the copy below counts: it is the loop's time too
         std::optional<model_type> saved;
         if constexpr (std::copy_constructible<model_type>)
             if (opt_.on_fault == fault_policy::skip) saved.emplace(model_);
@@ -704,6 +718,10 @@ private:
             e.duration  = std::chrono::steady_clock::now() - t0;
             emit_trace(e);
         }
+        if (opt_.fold_budget_time.count() > 0) {
+            const auto took = std::chrono::steady_clock::now() - t_fold;
+            if (took > opt_.fold_budget_time) over_budget(index, took);
+        }
         subs_dirty_ = true;
         ++folds_;
         try {
@@ -720,6 +738,23 @@ private:
     // handler (a throwing hook must not take the loop down).
     void emit_trace(const trace_event& e) noexcept {
         try { opt_.trace(e); } catch (...) {}
+    }
+
+    // A fold over budget: told to `slow`, or one stderr line per message
+    // type at most once a second (a storm of the same slow message is one
+    // report, not a flood that itself slows the loop).
+    void over_budget(std::size_t index, std::chrono::nanoseconds took) noexcept {
+        ++slow_folds_;
+        try {
+            if (opt_.slow) { opt_.slow(index, took); return; }
+            const auto now = std::chrono::steady_clock::now();
+            if (slow_said_.size() <= index) slow_said_.resize(index + 1);
+            if (now - slow_said_[index] < std::chrono::seconds(1)) return;
+            slow_said_[index] = now;
+            std::fprintf(stderr, "jaal: slow update: message #%zu took %.1f ms (budget %.1f ms)\n", index,
+                         std::chrono::duration<double, std::milli>(took).count(),
+                         std::chrono::duration<double, std::milli>(opt_.fold_budget_time).count());
+        } catch (...) {}
     }
 
     // Report a fault and apply the policy.
@@ -1340,6 +1375,8 @@ private:
     std::vector<queued> fired_;
     std::uint64_t       folds_      = 0;
     std::uint64_t       faults_     = 0;
+    std::uint64_t       slow_folds_ = 0;
+    std::vector<std::chrono::steady_clock::time_point> slow_said_;   // per message type: last stderr report
     std::size_t         abandoned_  = 0;
     std::size_t         duplicates_ = 0;
     std::optional<int>  exit_;           // set = quitting, with this code

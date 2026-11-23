@@ -58,8 +58,20 @@ set(ban_future      "std::(shared_)?future<")
 # wait(timeout) has neither shape. Same rule hidden_locks.py used.
 set(ban_atomic_wait "(\\.|->)wait[(]([^,()]+, *std::memory_order[_a-z:]*|true|false)[)]")
 set(ban_loop_arm    "arm_key_access|loop_identity::for_tests|arm_loop_for_tests")
+# The other ways to block or to share: a condition variable / semaphore /
+# latch / barrier is a wait jaal cannot see (no lock order, no wait graph);
+# volatile is not synchronisation in C++ and only ever hides a race.
+set(ban_condvar     "std::condition_variable(_any)?[^_]")
+set(ban_semaphore   "std::(counting_|binary_)semaphore")
+set(ban_latch       "std::(latch|barrier)[^_]")
+set(ban_volatile    "(^|[^A-Za-z0-9_])volatile[ \t]")
+# Mutable statics ("a task shares data through a global or static",
+# docs/concurrency.md §6) are NOT banned by pattern: their shapes are too many
+# for a line regex to be exact. ThreadSanitizer finds the ones threads
+# actually share (the `tsan` preset / CI job); a reviewed list lives in
+# docs/concurrency.md §7.
 set(ban_names thread detach async mutex atomic thread_local const_cast sink_access loop_key cap_mint
-              call_once future atomic_wait loop_arm)
+              call_once future atomic_wait loop_arm condvar semaphore latch volatile)
 
 # Parse the allowlist.
 file(STRINGS ${ALLOW} allow_lines)

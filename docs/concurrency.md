@@ -660,6 +660,9 @@ documented).
 | borrowed view inside a Msg | deep `Sendable` via structured binding packs | A |
 | mutable field inside "immutable" shared data | `Frozen` rejects `mutable` fields | A |
 | a task shares data through a global or static | ban-list flags mutable statics; jaal exposes none | B |
+| a wait jaal can't see (condition variable, semaphore, latch, barrier) | ban-list: `condvar`, `semaphore`, `latch` outside jaal's own primitives (granted per file) | B |
+| `volatile` used as synchronisation | ban-list `volatile` | B |
+| a slow `update` stalls the loop (a dropped frame, a stuck key) | `options::fold_budget_time` (8 ms): every fold over it -- update plus the rollback copy -- is reported by message, trace or not, and counted (`slow_folds()`) | A-runtime |
 | use after move | `bugprone-use-after-move` | B |
 | raw `std::thread` / `.detach()` / `std::async` in app code | ban-list test | B |
 | race on a global or captured local jaal can't see | TSan in CI | B |

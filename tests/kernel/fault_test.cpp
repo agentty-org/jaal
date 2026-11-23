@@ -240,13 +240,40 @@ int throwing_handler() {
     return 0;
 }
 
+// ── 7. a slow update is reported, by message, with or without trace ──────
+// The loop thread is the UI: an update over budget is a dropped frame. It
+// must name itself (its message) instead of hiding in a profile.
+struct Slowpoke {
+    struct Model { int n = 0; };
+    struct Quick {}; struct Slow {};
+    using Msg = std::variant<Quick, Slow>;
+    using Cmd = jaal::Cmd<Msg>;
+    static Cmd update(Model& m, Quick) { ++m.n; return {}; }
+    static Cmd update(Model& m, Slow) { std::this_thread::sleep_for(6ms); ++m.n; return {}; }
+};
+
+int slow_fold_reported() {
+    std::vector<std::size_t> which;
+    jaal::kernel::options opt;
+    opt.fold_budget_time = 3ms;
+    opt.slow = [&](std::size_t i, std::chrono::nanoseconds took) { if (took >= 3ms) which.push_back(i); };
+    jaal::headless<Slowpoke> h(opt);
+    h.send(Slowpoke::Quick{});
+    h.send(Slowpoke::Slow{});
+    h.send(Slowpoke::Quick{});
+    if (h.model().n != 3) return 701;
+    if (which != std::vector<std::size_t>{1}) return 702;   // the Slow alternative, only
+    if (h.kernel().slow_folds() != 1) return 703;
+    return 0;
+}
+
 }  // namespace
 
 int main() {
     int (*const checks[])() = {skip_keeps_model, stop_quits, task_fault_reported,
                                task_fault_stops_by_default, subscribe_fault_keeps_subs,
                                view_fault_skips_and_stops,
-                               shutdown_bounded, throwing_handler};
+                               shutdown_bounded, throwing_handler, slow_fold_reported};
     for (auto f : checks)
         if (int r = f()) {
             std::fprintf(stderr, "fault_test: check %d failed\n", r);
