@@ -267,13 +267,31 @@ int slow_fold_reported() {
     return 0;
 }
 
+// ── 8. ...and the report names the LEAF, through a variant of variants ──
+// "message #9" sent a reader to count alternatives in a 17-domain tree
+// (and to the wrong one: hand's #9 was a domain, not the dropdown it looked
+// like). The name is the type the update() overload took.
+namespace names {
+struct Open {}; struct Close {};
+using Inner = std::variant<Open, Close>;
+struct Root : std::variant<int, Inner> { using variant::variant; };
+}  // namespace names
+
+int slow_fold_named() {
+    namespace m = jaal::detail::msgname;
+    if (m::name(names::Root{names::Inner{names::Close{}}}).find("Close") == std::string_view::npos) return 801;
+    if (m::name(names::Root{7}) != "int") return 802;
+    if (m::name(names::Inner{names::Open{}}).find("names::Open") == std::string_view::npos) return 803;
+    return 0;
+}
+
 }  // namespace
 
 int main() {
     int (*const checks[])() = {skip_keeps_model, stop_quits, task_fault_reported,
                                task_fault_stops_by_default, subscribe_fault_keeps_subs,
                                view_fault_skips_and_stops,
-                               shutdown_bounded, throwing_handler, slow_fold_reported};
+                               shutdown_bounded, throwing_handler, slow_fold_reported, slow_fold_named};
     for (auto f : checks)
         if (int r = f()) {
             std::fprintf(stderr, "fault_test: check %d failed\n", r);

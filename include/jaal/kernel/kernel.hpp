@@ -154,6 +154,22 @@ inline std::uint64_t pick_seed() {
 }
 }  // namespace detail::rnd
 
+namespace detail::msgname {
+/// The leaf type a message holds, by name, down a variant of variants
+/// ("hand::msg::SettingsMenu", not "message #9"). Diagnostics only:
+/// the spelling is the compiler's (meta/type_name.hpp).
+template <class T>
+std::string_view name(const T& m) {
+    if constexpr (stdshape::derived_variant<T>)
+        return name(static_cast<const stdshape::variant_base_t<T>&>(m));
+    else if constexpr (prog::is_variant_v<T>)
+        return m.valueless_by_exception() ? std::string_view{"<valueless>"}
+                                          : std::visit([](const auto& a) { return name(a); }, m);
+    else
+        return meta::type_name<T>();
+}
+}  // namespace detail::msgname
+
 // ── kernel ───────────────────────────────────────────────────────────────
 namespace kernel {
 
@@ -198,7 +214,8 @@ struct options {
     /// fault policy makes before it -- before the kernel calls it slow. The
     /// loop thread is the UI: a fold over budget is a dropped frame or a
     /// stuck key. Every such fold is reported to `slow` (or one line to
-    /// stderr, at most once a second per message type) with the message's
+    /// stderr, at most once a second per message type, naming the LEAF
+    /// message: "slow update: app::Paste (message #3)") with the message's
     /// variant index and how long it took, whether or not `trace` is set, so
     /// a regression names itself instead of hiding in a profile. Counted in
     /// slow_folds(). 0 = no budget.
@@ -720,7 +737,9 @@ private:
         }
         if (opt_.fold_budget_time.count() > 0) {
             const auto took = std::chrono::steady_clock::now() - t_fold;
-            if (took > opt_.fold_budget_time) over_budget(index, took);
+            // msg was moved into update(), but a moved-from variant keeps
+            // its alternative: naming the leaf reads types, not values.
+            if (took > opt_.fold_budget_time) over_budget(index, msg, took);
         }
         subs_dirty_ = true;
         ++folds_;
@@ -743,7 +762,7 @@ private:
     // A fold over budget: told to `slow`, or one stderr line per message
     // type at most once a second (a storm of the same slow message is one
     // report, not a flood that itself slows the loop).
-    void over_budget(std::size_t index, std::chrono::nanoseconds took) noexcept {
+    void over_budget(std::size_t index, const msg_type& msg, std::chrono::nanoseconds took) noexcept {
         ++slow_folds_;
         try {
             if (opt_.slow) { opt_.slow(index, took); return; }
@@ -751,7 +770,9 @@ private:
             if (slow_said_.size() <= index) slow_said_.resize(index + 1);
             if (now - slow_said_[index] < std::chrono::seconds(1)) return;
             slow_said_[index] = now;
-            std::fprintf(stderr, "jaal: slow update: message #%zu took %.1f ms (budget %.1f ms)\n", index,
+            const std::string_view leaf = detail::msgname::name(msg);
+            std::fprintf(stderr, "jaal: slow update: %.*s (message #%zu) took %.1f ms (budget %.1f ms)\n",
+                         static_cast<int>(leaf.size()), leaf.data(), index,
                          std::chrono::duration<double, std::milli>(took).count(),
                          std::chrono::duration<double, std::milli>(opt_.fold_budget_time).count());
         } catch (...) {}
