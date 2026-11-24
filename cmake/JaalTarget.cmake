@@ -24,6 +24,12 @@ function(jaal_target_is expr out)
     string(MAKE_C_IDENTIFIER "JAAL_TARGET_IS_${expr}" key)
     set(CMAKE_REQUIRED_INCLUDES "${_JAAL_TARGET_INCLUDE}")
     set(CMAKE_REQUIRED_QUIET ON)
+    # The stack's dialect, not the compiler's default: GCC and clang default
+    # to gnu++NN, which predefines `linux` / `unix` as 1 -- a different
+    # preprocessor than the one the code is built with.
+    set(CMAKE_CXX_STANDARD 20)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+    set(CMAKE_CXX_EXTENSIONS OFF)
     check_cxx_source_compiles("
 #include <jaal/meta/target.hpp>
 #include <jaal/platform/backend.hpp>
@@ -37,3 +43,13 @@ int main() { return 0; }" ${key})
         set(${out} OFF PARENT_SCOPE)
     endif()
 endfunction()
+
+# A check that cannot COMPILE reads as "no", silently -- so first prove the
+# headers compile here at all (on Linux they once didn't, and every answer
+# came back OFF: no Wayland, no epoll). Configure stops instead.
+jaal_target_is(1 _jaal_target_works)
+if(NOT _jaal_target_works)
+    message(FATAL_ERROR "jaal: cannot compile jaal/meta/target.hpp + jaal/platform/backend.hpp with this "
+                        "compiler, so no platform question can be answered; see CMakeConfigureLog.yaml "
+                        "(check JAAL_TARGET_IS_1)")
+endif()

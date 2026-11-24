@@ -168,12 +168,16 @@
 
 namespace jaal::platform {
 
-enum class os_kind : unsigned char { windows, apple, linux, android, freebsd, openbsd, netbsd, emscripten, other_unix };
+// `gnu_linux`, not `linux`: in the GNU dialects (-std=gnu++NN, GCC's and
+// clang's DEFAULT) `linux` and `unix` are predefined macros, = 1. An
+// enumerator named `linux` made this header a syntax error there -- which
+// is how CMake's checks against it (jaal_target_is) all read "no" on Linux.
+enum class os_kind : unsigned char { windows, apple, gnu_linux, android, freebsd, openbsd, netbsd, emscripten, other_unix };
 
 /// The OS as a value, for `if constexpr` and tables.
 inline constexpr os_kind os =
     JAAL_OS_WINDOWS ? os_kind::windows : JAAL_OS_APPLE ? os_kind::apple : JAAL_OS_ANDROID ? os_kind::android
-  : JAAL_OS_LINUX ? os_kind::linux : JAAL_OS_FREEBSD ? os_kind::freebsd : JAAL_OS_OPENBSD ? os_kind::openbsd
+  : JAAL_OS_LINUX ? os_kind::gnu_linux : JAAL_OS_FREEBSD ? os_kind::freebsd : JAAL_OS_OPENBSD ? os_kind::openbsd
   : JAAL_OS_NETBSD ? os_kind::netbsd : JAAL_OS_EMSCRIPTEN ? os_kind::emscripten : os_kind::other_unix;
 
 static_assert(JAAL_OS_WINDOWS + JAAL_OS_APPLE + JAAL_OS_POSIX >= 1, "jaal: an OS it cannot name");
