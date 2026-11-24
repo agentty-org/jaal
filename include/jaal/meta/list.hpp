@@ -9,6 +9,8 @@
 //     cost is linear in pack size and there is no recursive instantiation
 //     depth to blow
 
+#include <jaal/meta/target.hpp>
+
 #include <cstddef>
 #include <type_traits>
 #include <utility>
@@ -28,7 +30,7 @@ namespace jaal::meta {
 //   unique, dedup, subset_of, minus, same_set                   O(n²) comparisons
 // Pairwise ops are fine for effect rows (~10-30 entries). Don't feed them
 // hundreds of types.
-#if defined(__clang__) || defined(__GNUC__)
+#if JAAL_CC_GNU_EXT
 #  define JAAL_SAME(A, B) __is_same(A, B)
 #else
 #  define JAAL_SAME(A, B) std::is_same_v<A, B>
@@ -113,7 +115,7 @@ inline constexpr std::size_t index_of_v<list<Ts...>, T> =
 // on any type built through it -- e.g. returning a jaal::Cmd from a TU that
 // includes jaal via a PCH. Upstream clang (23) is fine.
 namespace detail {
-#if defined(__cpp_pack_indexing) && __cpp_pack_indexing >= 202311L && !defined(__apple_build_version__)
+#if defined(__cpp_pack_indexing) && __cpp_pack_indexing >= 202311L && !JAAL_CC_APPLE_CLANG
 template <std::size_t I, class... Ts>
 using at_impl = Ts...[I];
 #else

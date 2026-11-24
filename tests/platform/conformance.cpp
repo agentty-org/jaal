@@ -17,6 +17,7 @@
 //  10. (POSIX) EINTR doesn't end a wait early
 //  11. (POSIX) wake() works from inside a signal handler
 
+#include <jaal/meta/target.hpp>
 #include <jaal/platform/concepts.hpp>
 
 #include <atomic>
@@ -25,7 +26,7 @@
 #include <optional>
 #include <thread>
 
-#if defined(_WIN32)
+#if JAAL_OS_WINDOWS
 #  include <jaal/platform/windows/wait_reactor.hpp>
 #  ifndef WIN32_LEAN_AND_MEAN
 #    define WIN32_LEAN_AND_MEAN
@@ -36,10 +37,10 @@
 #  include <windows.h>
 #else
 #  include <jaal/platform/posix/poll_reactor.hpp>
-#  if defined(__linux__)
+#  if JAAL_OS_LINUX
 #    include <jaal/platform/linux/epoll_reactor.hpp>
 #  endif
-#  if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+#  if JAAL_OS_APPLE || JAAL_OS_FREEBSD || JAAL_OS_NETBSD || JAAL_OS_OPENBSD
 #    include <jaal/platform/darwin/kqueue_reactor.hpp>
 #    define JAAL_TEST_KQUEUE 1
 #  endif
@@ -56,7 +57,7 @@ using clk = std::chrono::steady_clock;
 namespace {
 
 // ── per-OS fixture: a channel whose read end the reactor can watch ───────
-#if defined(_WIN32)
+#if JAAL_OS_WINDOWS
 // An anonymous pipe is a byte-mode pipe: exactly the mintty/MSYS2 stdin
 // case, watched with watch_pipe.
 struct channel {
@@ -139,7 +140,7 @@ int precise_timeouts() {
         if (got < want) return 82;                 // early: the one hard rule
         best = std::min(best, got);
     }
-#if defined(__linux__)
+#if JAAL_OS_LINUX
     // epoll_pwait2 / ppoll: the best of 20 lands well inside 17 ms. A
     // reactor still rounding to whole ms waits >= 17 ms every time.
     if (best >= std::chrono::milliseconds(17)) return 83;
@@ -317,7 +318,7 @@ int modify_after_the_reactor_is_gone_is_an_error() {
     return 0;
 }
 
-#if !defined(_WIN32)
+#if !JAAL_OS_WINDOWS
 extern "C" void noop_handler(int) {}
 
 template <pf::Reactor R>
@@ -383,7 +384,7 @@ int suite(const char* name) {
         modify_to_the_same_interest_is_fine<R>,
         modify_on_an_empty_registration_is_an_error<R>,
         modify_after_the_reactor_is_gone_is_an_error<R>,
-#if !defined(_WIN32)
+#if !JAAL_OS_WINDOWS
         eintr_doesnt_end_wait<R>, wake_is_signal_safe<R>,
 #endif
     };
@@ -402,11 +403,11 @@ int suite(const char* name) {
 }  // namespace
 
 int main() {
-#if defined(_WIN32)
+#if JAAL_OS_WINDOWS
     return suite<pf::wait_reactor>("wait_reactor");
 #else
     int r = suite<pf::poll_reactor>("poll_reactor");
-#  if defined(__linux__)
+#  if JAAL_OS_LINUX
     r |= suite<pf::epoll_reactor>("epoll_reactor");
 #  endif
 #  if defined(JAAL_TEST_KQUEUE)

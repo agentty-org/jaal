@@ -1,11 +1,13 @@
 #pragma once
 #include <jaal/meta/target.hpp>
+#include <jaal/platform/backend.hpp>
 // jaal::platform::native_reactor / native_signals / native_file_lock — the
 // backends for the OS this is being compiled for.
 //
-// This is the ONE #if chain over operating systems in jaal (docs/design.md §7).
-// Everything above it names native_reactor and native_signals; nothing
-// above it names an OS.
+// The types for the backend platform/backend.hpp chose -- the ONE mapping
+// from OS to backend in jaal (docs/design.md §7), which the build's source
+// list reads too. Everything above this names native_reactor and
+// native_signals; nothing above it names an OS.
 //
 //   Linux           epoll_reactor   + posix_signals   + posix_file_lock   + posix_process
 //   macOS, BSDs     kqueue_reactor  + posix_signals   + posix_file_lock   + posix_process
@@ -17,7 +19,7 @@
 #include "process.hpp"
 #include "signal.hpp"
 
-#if JAAL_OS_WINDOWS
+#if JAAL_PLATFORM_WINDOWS
 #  include "windows/console_signals.hpp"
 #  include "windows/file_lock.hpp"
 #  include "windows/process.hpp"
@@ -28,7 +30,7 @@ using native_signals   = console_signals;
 using native_file_lock = windows_file_lock;
 using native_process   = windows_process;
 }  // namespace jaal::platform
-#elif JAAL_OS_LINUX
+#elif JAAL_PLATFORM_EPOLL
 #  include "linux/epoll_reactor.hpp"
 #  include "posix/file_lock.hpp"
 #  include "posix/process.hpp"
@@ -39,7 +41,7 @@ using native_signals   = posix_signals;
 using native_file_lock = posix_file_lock;
 using native_process   = posix_process;
 }  // namespace jaal::platform
-#elif JAAL_OS_APPLE || JAAL_OS_FREEBSD || JAAL_OS_NETBSD || JAAL_OS_OPENBSD
+#elif JAAL_PLATFORM_KQUEUE
 #  include "darwin/kqueue_reactor.hpp"
 #  include "posix/file_lock.hpp"
 #  include "posix/process.hpp"
@@ -50,7 +52,7 @@ using native_signals   = posix_signals;
 using native_file_lock = posix_file_lock;
 using native_process   = posix_process;
 }  // namespace jaal::platform
-#elif JAAL_OS_UNIX
+#elif JAAL_PLATFORM_POLL
 #  include "posix/file_lock.hpp"
 #  include "posix/poll_reactor.hpp"
 #  include "posix/process.hpp"

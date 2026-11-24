@@ -1,8 +1,9 @@
 // tests/platform/signals_test.cpp — POSIX signals as events.
 
+#include <jaal/meta/target.hpp>
 #include <jaal/platform/signal.hpp>
 
-#if defined(__unix__) || defined(__APPLE__)
+#if JAAL_OS_UNIX || JAAL_OS_APPLE
 #  include <jaal/platform/posix/poll_reactor.hpp>
 #  include <jaal/platform/posix/signals.hpp>
 #  include <csignal>
@@ -33,7 +34,7 @@ constexpr int count(signal_set s) { int n = 0; for (auto x : s) { (void)x; ++n; 
 static_assert(count(signal_set{sig::interrupt, sig::child}) == 2);
 static_assert(count(signal_set{}) == 0);
 
-#if defined(__unix__) || defined(__APPLE__)
+#if JAAL_OS_UNIX || JAAL_OS_APPLE
 
 namespace {
 

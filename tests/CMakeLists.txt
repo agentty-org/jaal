@@ -77,7 +77,7 @@ jaal_test(kernel_lock_order_test kernel/lock_order_test.cpp)
 jaal_test(kernel_keyed_task_test kernel/keyed_task_test.cpp)
 # Input through on(const Model&, const Event&), composed too.
 jaal_test(kernel_input_test kernel/input_test.cpp)
-if(UNIX)
+if(JAAL_PLATFORM_POSIX)
     # The audit's fixes: forged capabilities abort, shutdown is a barrier
     # every time, no blocking post under a lock, no wake after teardown.
     jaal_test(kernel_backstop_test kernel/backstop_test.cpp)
@@ -91,11 +91,11 @@ jaal_test(kernel_clocked_test kernel/clocked_test.cpp)
 jaal_test(platform_conformance platform/conformance.cpp)
 # Every process backend: posix_process here, windows_process under wine.
 jaal_test(platform_process_conformance platform/process_conformance.cpp)
-if(UNIX)
+if(JAAL_PLATFORM_POSIX)
     # The same suite with pidfd_open denied, so the fallback exit watcher
     # meets every check the pidfd path does. Without the fallback, a child's
     # exit was never observed there and every run waited out its deadline.
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if(JAAL_OS_LINUX)
         enable_language(C)
         add_library(jaal_no_pidfd_shim SHARED platform/no_pidfd_shim.c)
         target_link_libraries(jaal_no_pidfd_shim PRIVATE ${CMAKE_DL_LIBS})
@@ -134,12 +134,12 @@ if(UNIX)
     jaal_test(platform_file_lock_conformance platform/file_lock_conformance.cpp)
 endif()
 # modify() against a real socket send buffer. POSIX: uses socketpair().
-if(UNIX)
+if(JAAL_PLATFORM_POSIX)
     jaal_test(platform_modify_test platform/modify_test.cpp)
     # A registration that outlives its fd can't silence a later watch.
     jaal_test(platform_fd_reuse_test platform/fd_reuse_test.cpp)
     jaal_test(platform_same_tty_test platform/same_tty_test.cpp)
-    if(NOT APPLE)
+    if(NOT JAAL_OS_APPLE)
         target_link_libraries(platform_same_tty_test PRIVATE util)
     endif()
     # owned_handle against real descriptors: closed exactly once, and
@@ -147,7 +147,7 @@ if(UNIX)
     jaal_test(platform_handle_test platform/handle_test.cpp)
 endif()
 jaal_test(platform_signals_test platform/signals_test.cpp)
-if(WIN32)
+if(JAAL_PLATFORM_WINDOWS)
     # The wait reactor on pipes: idle costs no wakeups, interest is real.
     jaal_test(platform_windows_pipe_test platform/windows_pipe_test.cpp)
     # The wait reactor on the thread's window-message queue (GUI loops).
@@ -171,7 +171,7 @@ jaal_test(kernel_time_cache_test kernel/time_cache_test.cpp)
 jaal_test(kernel_subs_key_test kernel/subs_key_test.cpp)
 jaal_test(kernel_idle_gate_test kernel/idle_gate_test.cpp)
 # ^C during shutdown: needs fork() and a real signal, so POSIX only.
-if(UNIX)
+if(JAAL_PLATFORM_POSIX)
     jaal_test(kernel_signal_shutdown_test kernel/signal_shutdown_test.cpp)
 endif()
 
@@ -506,10 +506,16 @@ set_tests_properties(banlist_src PROPERTIES LABELS "static")
 # ── one_os: the OS is read in one file (platform/target.hpp) ───────────────────────
 add_test(NAME one_os
          COMMAND ${CMAKE_COMMAND}
-                 "-DROOTS=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/src"
+                 "-DROOTS=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/src;${PROJECT_SOURCE_DIR}/tests"
                  -DSOURCE=${PROJECT_SOURCE_DIR}/include/jaal/meta/target.hpp
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/lint/one_os.cmake)
-set_tests_properties(one_os PROPERTIES LABELS "static")
+# ...and the build asks it of the headers: no if(WIN32 / APPLE / UNIX) in a
+# CMakeLists (jaal_target_is, cmake/JaalTarget.cmake).
+add_test(NAME one_os_cmake
+         COMMAND ${CMAKE_COMMAND}
+                 "-DFILES=${PROJECT_SOURCE_DIR}/CMakeLists.txt;${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt"
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/lint/one_os_cmake.cmake)
+set_tests_properties(one_os one_os_cmake PROPERTIES LABELS "static")
 
 # ── allowlist rot: a grant that no longer earns its keep ──────────────────
 #
@@ -540,7 +546,7 @@ set_tests_properties(allowlist_tight_src PROPERTIES LABELS "static")
 # ships macOS libc headers, so they can at least COMPILE for arm64 macOS on
 # every build. That catches missing includes and wrong kqueue calls; it
 # proves nothing about behaviour.
-if(NOT APPLE)
+if(NOT JAAL_OS_APPLE)
     find_program(JAAL_ZIG zig)
     if(JAAL_ZIG)
         foreach(src darwin/kqueue_reactor posix/poll_reactor posix/signals)

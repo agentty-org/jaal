@@ -1,6 +1,7 @@
 // tests/kernel/run_test.cpp — jaal::run<P> on the real platform: native
 // reactor, real clock, real signals, real threads. Nothing simulated.
 
+#include <jaal/meta/target.hpp>
 #include <jaal/core/core_fx.hpp>
 #include <jaal/kernel/run.hpp>
 
@@ -11,7 +12,7 @@
 #include <thread>
 #include <variant>
 
-#if !defined(_WIN32)
+#if !JAAL_OS_WINDOWS
 #  include <csignal>
 #  include <sys/resource.h>
 #  include <unistd.h>
@@ -66,7 +67,7 @@ struct Idle {
     static Cmd update(Model&, Wake) { return Cmd::quit(0); }
 };
 
-#if !defined(_WIN32)
+#if !JAAL_OS_WINDOWS
 static double cpu_seconds() {
     rusage u{};
     ::getrusage(RUSAGE_SELF, &u);
@@ -76,7 +77,7 @@ static double cpu_seconds() {
 #endif
 
 static int idle_sleeps() {
-#if !defined(_WIN32)
+#if !JAAL_OS_WINDOWS
     const double c0 = cpu_seconds();
     const auto t0 = clk::now();
     if (jaal::run<Idle>() != 0) return 201;
@@ -92,7 +93,7 @@ static int idle_sleeps() {
     return 0;
 }
 
-#if !defined(_WIN32)
+#if !JAAL_OS_WINDOWS
 // ── 3. a handled signal becomes a Msg ────────────────────────────────────
 struct Handles {
     struct Model { bool got_int = false; };
@@ -193,7 +194,7 @@ int main() {
     });
     int (*const checks[])() = {
         timers_and_tasks, idle_sleeps,
-#if !defined(_WIN32)
+#if !JAAL_OS_WINDOWS
         subscribed_signal, default_signal_exit,
 #endif
         shutdown_with_live_tasks,

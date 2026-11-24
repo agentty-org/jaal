@@ -29,13 +29,14 @@
 // backend that invented its own readiness would agree with itself and prove
 // nothing.
 
+#include <jaal/meta/target.hpp>
 #include <jaal/platform/concepts.hpp>
 #include <jaal/platform/process.hpp>
-#if !defined(_WIN32)
+#if !JAAL_OS_WINDOWS
 #  include <jaal/platform/sim/process.hpp>
 #endif
 
-#if defined(_WIN32)
+#if JAAL_OS_WINDOWS
 #  include <windows.h>
 #  include <jaal/platform/windows/process.hpp>
 #  include <jaal/platform/windows/wait_reactor.hpp>
@@ -52,7 +53,7 @@
 #include <thread>
 #include <vector>
 
-#if !defined(_WIN32)
+#if !JAAL_OS_WINDOWS
 #  include <dirent.h>
 #  include <jaal/platform/posix/poll_reactor.hpp>
 #  include <csignal>
@@ -60,7 +61,7 @@
 #  include <pthread.h>
 #  include <unistd.h>
 #endif
-#if defined(__linux__)
+#if JAAL_OS_LINUX
 #  include <sys/syscall.h>
 #  ifndef SYS_pidfd_open
 #    define SYS_pidfd_open 434
@@ -72,7 +73,7 @@ namespace pf = jaal::platform;
 
 namespace {
 
-#if defined(_WIN32)
+#if JAAL_OS_WINDOWS
 using native_reactor = pf::wait_reactor;
 #else
 using native_reactor = pf::poll_reactor;
@@ -88,7 +89,7 @@ bool readable_now(pf::borrowed_handle h);
 // to move it forward. "Forward" is a step for a scripted child and a short
 // wait for a real one, which is the only place the two differ.
 
-#if !defined(_WIN32)
+#if !JAAL_OS_WINDOWS
 struct sim_fixture {
     using process = pf::sim_process;
     static constexpr const char* name = "sim_process";
@@ -130,7 +131,7 @@ struct sim_fixture {
 };
 #endif
 
-#if !defined(_WIN32)
+#if !JAAL_OS_WINDOWS
 /// The same children, as real programs.
 ///
 /// "Forward" is a short wait rather than a step: a real child runs on the
@@ -179,7 +180,7 @@ struct posix_fixture {
 };
 #endif
 
-#if defined(_WIN32)
+#if JAAL_OS_WINDOWS
 /// The same children on Windows, through cmd.exe.
 struct windows_fixture {
     using process = pf::windows_process;
@@ -242,7 +243,7 @@ bool readable_now(pf::borrowed_handle h) {
     return false;
 }
 
-#if defined(_WIN32)
+#if JAAL_OS_WINDOWS
 std::string drain(pf::borrowed_handle h) {
     std::string out;
     char buf[1024];
@@ -442,7 +443,7 @@ int suite(const char* name) {
 }  // namespace
 
 int main() {
-#if defined(_WIN32)
+#if JAAL_OS_WINDOWS
     // sim_process is POSIX-only (its handles are pipes), so here the suite
     // runs the real backend alone.
     int r = suite<windows_fixture>(windows_fixture::name);
@@ -545,7 +546,7 @@ int main() {
         }
     }
 
-#if defined(__linux__)
+#if JAAL_OS_LINUX
     // The no-pidfd lane must actually BE one: if the shim silently stopped
     // working, this run would just repeat the pidfd path and prove nothing.
     if (const char* e = std::getenv("JAAL_EXPECT_NO_PIDFD"); e && *e == '1') {

@@ -22,11 +22,12 @@
 // The compile-time half — that finish() can't be called without a
 // teardown_key — is in tests/compile_fail/kernel.cpp cases 6 and 7.
 
+#include <jaal/meta/target.hpp>
 #include <jaal/jaal.hpp>
 
 #include <chrono>
 #include <csignal>
-#if !defined(_WIN32)
+#if !JAAL_OS_WINDOWS
 #  include <signal.h>   // struct sigaction / ::sigaction (POSIX only)
 #endif
 #include <cstdio>
@@ -51,7 +52,7 @@ namespace {
 std::vector<std::string> log;
 
 bool sigint_is_default() {
-#if defined(_WIN32)
+#if JAAL_OS_WINDOWS
     // Windows has no sigaction(). The CRT signal() returns the CURRENT
     // handler while installing the new one, so query-and-restore reads the
     // live disposition without disturbing it. jaal's teardown restores the

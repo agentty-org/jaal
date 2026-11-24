@@ -14,6 +14,7 @@
 // With wake-under-lock, 0/20. Deterministic, not probabilistic: the window
 // is held open on purpose.
 
+#include <jaal/meta/target.hpp>
 #include <jaal/kernel/mailbox.hpp>
 
 #include <atomic>
@@ -22,7 +23,7 @@
 #include <memory>
 #include <thread>
 
-#if !defined(_WIN32)
+#if !JAAL_OS_WINDOWS
 #  include <fcntl.h>
 #  include <unistd.h>
 #endif
@@ -32,7 +33,7 @@ using namespace std::chrono_literals;
 struct M { int v; };
 
 int main() {
-#if !defined(_WIN32)
+#if !JAAL_OS_WINDOWS
     int stray = 0;
     for (int round = 0; round < 20; ++round) {
         int p[2];

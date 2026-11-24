@@ -6,6 +6,8 @@
 // (e.g. "std::__cxx11::basic_string<char>" on libstdc++) and that's fine
 // for a human reading an error, not fine for anything a program depends on.
 
+#include <jaal/meta/target.hpp>
+
 #include <string_view>
 
 namespace jaal::meta {
@@ -13,9 +15,9 @@ namespace jaal::meta {
 namespace detail {
 template <class T>
 consteval std::string_view raw_signature() noexcept {
-#if defined(__clang__) || defined(__GNUC__)
+#if JAAL_CC_GNU_EXT
     return __PRETTY_FUNCTION__;
-#elif defined(_MSC_VER)
+#elif JAAL_CC_MSVC_ABI
     return __FUNCSIG__;
 #else
     return {};
@@ -26,15 +28,15 @@ consteval std::string_view raw_signature() noexcept {
 template <class T>
 consteval std::string_view type_name() noexcept {
     constexpr std::string_view s = detail::raw_signature<T>();
-#if defined(__clang__)
+#if JAAL_CC_CLANG
     // "... raw_signature() [T = X]"
     constexpr auto b = s.find("T = ") + 4;
     constexpr auto e = s.rfind(']');
-#elif defined(__GNUC__)
+#elif JAAL_CC_GCC
     // "... raw_signature() [with T = X; std::string_view = ...]"
     constexpr auto b = s.find("T = ") + 4;
     constexpr auto e = s.find_first_of(";]", b);
-#elif defined(_MSC_VER)
+#elif JAAL_CC_MSVC_ABI
     // "... raw_signature<X>(void) noexcept"
     constexpr auto b = s.find("raw_signature<") + 14;
     constexpr auto e = s.rfind(">(");

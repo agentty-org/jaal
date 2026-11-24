@@ -31,10 +31,11 @@
 // acquire_within, every backend: free -> ours, busy -> nullopt at the
 // deadline, fault -> an error (the sim stages the last two).
 
+#include <jaal/meta/target.hpp>
 #include <jaal/platform/file_lock.hpp>
 #include <jaal/platform/sim/file_lock.hpp>
 
-#if !defined(_WIN32)
+#if !JAAL_OS_WINDOWS
 #  include <jaal/platform/posix/file_lock.hpp>
 #endif
 
@@ -44,7 +45,7 @@
 #include <string>
 #include <thread>
 
-#if !defined(_WIN32)
+#if !JAAL_OS_WINDOWS
 #  include <cerrno>
 #  include <csignal>
 #  include <sys/wait.h>
@@ -69,7 +70,7 @@ void ok(bool cond, const char* backend, const char* what) {
 std::string scratch(const char* backend) {
     return std::string{"/tmp/jaal_file_lock_"} + backend + "_"
            + std::to_string(
-#if defined(_WIN32)
+#if JAAL_OS_WINDOWS
                0
 #else
                ::getpid()
@@ -147,7 +148,7 @@ void check_shape(const char* backend, const std::string& target) {
 }
 
 // ── kernel rules: a real second process ─────────────────────────────────
-#if !defined(_WIN32)
+#if !JAAL_OS_WINDOWS
 
 // Does a forked child see the lock as taken? Returns the child's verdict.
 // The child uses try_acquire so it answers instead of blocking: a hung
@@ -329,7 +330,7 @@ int main() {
     check_shape<pf::sim_file_lock>("sim", scratch("sim"));
     pf::sim_file_lock::script().reset();
 
-#if !defined(_WIN32)
+#if !JAAL_OS_WINDOWS
     const std::string target = scratch("posix");
     check_shape<pf::posix_file_lock>("posix", target);
     check_kernel(target);

@@ -9,6 +9,7 @@
 // so its unwatch leaves the new watch alone. poll and kqueue refuse the new
 // watch with file_exists instead, which is loud rather than silent.
 
+#include <jaal/meta/target.hpp>
 #include <jaal/platform.hpp>
 #include <jaal/platform/posix/poll_reactor.hpp>
 
@@ -65,10 +66,10 @@ int late_unwatch_spares_the_new_watch(const char* name, bool refuses) {
 
 int main() {
     int rc = 0;
-#if defined(__linux__)
+#if JAAL_OS_LINUX
     rc |= late_unwatch_spares_the_new_watch<pf::epoll_reactor>("epoll", false);
 #endif
-#if defined(__APPLE__) || defined(__FreeBSD__)
+#if JAAL_OS_APPLE || JAAL_OS_FREEBSD
     rc |= late_unwatch_spares_the_new_watch<pf::kqueue_reactor>("kqueue", true);
 #endif
     rc |= late_unwatch_spares_the_new_watch<pf::poll_reactor>("poll", true);

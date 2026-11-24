@@ -57,14 +57,27 @@ include(JaalWarnings)
 # ONLY in src/platform/<os>/, so they never leak into user code. The
 # library is STATIC; there's no stable ABI to promise yet.
 set(JAAL_PLATFORM_SOURCES "")
-if(WIN32)
+# Which backend this OS runs is decided ONCE, in C++
+# (include/jaal/platform/backend.hpp, which platform/select.hpp reads too).
+# The source list asks that header -- it never re-derives the answer from
+# WIN32 / APPLE / CMAKE_SYSTEM_NAME, which is how a list drifts from the
+# header (this one compiled kqueue for every "*BSD" while the header chose
+# poll on DragonFly).
+include(${PROJECT_SOURCE_DIR}/cmake/JaalTarget.cmake)
+jaal_target_is(JAAL_PLATFORM_WINDOWS JAAL_PLATFORM_WINDOWS)
+jaal_target_is(JAAL_PLATFORM_POSIX   JAAL_PLATFORM_POSIX)
+jaal_target_is(JAAL_PLATFORM_EPOLL   JAAL_PLATFORM_EPOLL)
+jaal_target_is(JAAL_PLATFORM_KQUEUE  JAAL_PLATFORM_KQUEUE)
+jaal_target_is(JAAL_OS_LINUX         JAAL_OS_LINUX)
+jaal_target_is(JAAL_OS_APPLE         JAAL_OS_APPLE)
+if(JAAL_PLATFORM_WINDOWS)
     list(APPEND JAAL_PLATFORM_SOURCES
          src/platform/windows/wait_reactor.cpp
          src/platform/windows/console_signals.cpp
          src/platform/windows/file_lock.cpp
          src/platform/windows/handle.cpp
          src/platform/windows/process.cpp)
-elseif(UNIX)
+elseif(JAAL_PLATFORM_POSIX)
     list(APPEND JAAL_PLATFORM_SOURCES
          src/platform/posix/poll_reactor.cpp
          src/platform/posix/signals.cpp
@@ -73,11 +86,13 @@ elseif(UNIX)
          src/platform/posix/file_lock.cpp
          src/platform/sim/process.cpp
          src/platform/sim/file_lock.cpp)
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android")
+    if(JAAL_PLATFORM_EPOLL)
         list(APPEND JAAL_PLATFORM_SOURCES src/platform/linux/epoll_reactor.cpp)
-    elseif(APPLE OR CMAKE_SYSTEM_NAME MATCHES "BSD")
+    elseif(JAAL_PLATFORM_KQUEUE)
         list(APPEND JAAL_PLATFORM_SOURCES src/platform/darwin/kqueue_reactor.cpp)
     endif()
+else()
+    message(FATAL_ERROR "jaal: no platform backend for this OS (include/jaal/platform/backend.hpp)")
 endif()
 
 add_library(jaal STATIC ${JAAL_PLATFORM_SOURCES})
@@ -117,7 +132,7 @@ else()
 endif()
 find_package(Threads REQUIRED)
 target_link_libraries(jaal PUBLIC Threads::Threads)
-if(WIN32)
+if(JAAL_PLATFORM_WINDOWS)
     # winmm: timeBeginPeriod/timeEndPeriod, used by the wait_reactor to raise
     # the process timer resolution to 1 ms so sub-frame timers are honoured.
     target_link_libraries(jaal PUBLIC winmm)

@@ -10,6 +10,7 @@
 // after its first backed-up frame; lsof showed its kqueue down to one
 // registration (the waker).
 
+#include <jaal/meta/target.hpp>
 #include <jaal/jaal.hpp>
 
 #include <cstdio>
@@ -17,7 +18,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <termios.h>
-#if defined(__APPLE__)
+#if JAAL_OS_APPLE
 #include <util.h>
 #else
 #include <pty.h>
