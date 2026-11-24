@@ -98,6 +98,18 @@ endif()
 add_library(jaal STATIC ${JAAL_PLATFORM_SOURCES})
 add_library(jaal::jaal ALIAS jaal)
 
+# jaal::target -- jaal/meta/target.hpp alone, the one decision of what the
+# platform is. It depends on nothing (meta/), needs no C++26 and pulls in
+# no runtime, so a library that is NOT built on jaal (maya's view layer)
+# can still read the platform from the one place instead of re-deriving it.
+# jaal itself links it too, so there is one include path and one answer.
+add_library(jaal_target INTERFACE)
+add_library(jaal::target ALIAS jaal_target)
+target_include_directories(jaal_target INTERFACE
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+target_link_libraries(jaal PUBLIC jaal_target)
+
 file(GLOB_RECURSE JAAL_HEADERS CONFIGURE_DEPENDS
      ${PROJECT_SOURCE_DIR}/include/jaal/*.hpp)
 target_sources(jaal PUBLIC
@@ -161,7 +173,7 @@ endif()
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
-install(TARGETS jaal EXPORT jaalTargets FILE_SET HEADERS)
+install(TARGETS jaal jaal_target EXPORT jaalTargets FILE_SET HEADERS)
 install(EXPORT jaalTargets
         NAMESPACE   jaal::
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/jaal)
