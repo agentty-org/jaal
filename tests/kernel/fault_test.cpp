@@ -254,9 +254,12 @@ struct Slowpoke {
 
 int slow_fold_reported() {
     std::vector<std::size_t> which;
+    std::string leaf;
     jaal::kernel::options opt;
     opt.fold_budget_time = 3ms;
-    opt.slow = [&](std::size_t i, std::chrono::nanoseconds took) { if (took >= 3ms) which.push_back(i); };
+    opt.slow = [&](std::string_view name, std::size_t i, std::chrono::nanoseconds took) {
+        if (took >= 3ms) { which.push_back(i); leaf = name; }
+    };
     jaal::headless<Slowpoke> h(opt);
     h.send(Slowpoke::Quick{});
     h.send(Slowpoke::Slow{});
@@ -264,6 +267,7 @@ int slow_fold_reported() {
     if (h.model().n != 3) return 701;
     if (which != std::vector<std::size_t>{1}) return 702;   // the Slow alternative, only
     if (h.kernel().slow_folds() != 1) return 703;
+    if (leaf.find("Slow") == std::string::npos) return 704;   // the hook gets the name too
     return 0;
 }
 

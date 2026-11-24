@@ -126,6 +126,13 @@
 #else
 #  define JAAL_CPU_X86_64 0
 #endif
+/// 32-bit x86 (i386..i686, MSVC's x86): a release target of its own for
+/// some projects above (their asset names, their syscall tables).
+#if defined(__i386__) || defined(_M_IX86)
+#  define JAAL_CPU_X86_32 1
+#else
+#  define JAAL_CPU_X86_32 0
+#endif
 /// What the compiler may emit for this build (its -m flags), not what the
 /// machine it runs on has: SIMD code tests these, never the raw __SSE2__.
 #if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__)
@@ -143,10 +150,20 @@
 #else
 #  define JAAL_ISA_SSE41 0
 #endif
+#if defined(__SSE4_2__)
+#  define JAAL_ISA_SSE42 1
+#else
+#  define JAAL_ISA_SSE42 0
+#endif
 #if defined(__AVX2__)
 #  define JAAL_ISA_AVX2 1
 #else
 #  define JAAL_ISA_AVX2 0
+#endif
+#if defined(__AVX512F__)
+#  define JAAL_ISA_AVX512F 1
+#else
+#  define JAAL_ISA_AVX512F 0
 #endif
 
 namespace jaal::platform {

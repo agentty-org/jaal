@@ -220,7 +220,12 @@ struct options {
     /// a regression names itself instead of hiding in a profile. Counted in
     /// slow_folds(). 0 = no budget.
     std::chrono::microseconds fold_budget_time{8000};
-    std::function<void(std::size_t msg_index, std::chrono::nanoseconds took)> slow;
+    /// Told about each fold over budget instead of the stderr line -- for a
+    /// host whose stderr is not a place anyone reads (a full-screen TUI
+    /// redirects it). `leaf` is the type the update() overload took, the
+    /// same name the stderr line prints; `msg_index` the root alternative.
+    std::function<void(std::string_view leaf, std::size_t msg_index,
+                       std::chrono::nanoseconds took)> slow;
 
     /// The seed for Cmd::random. 0 (the default) means "pick one": the
     /// kernel draws from the OS so a real run differs each time, and
@@ -765,12 +770,12 @@ private:
     void over_budget(std::size_t index, const msg_type& msg, std::chrono::nanoseconds took) noexcept {
         ++slow_folds_;
         try {
-            if (opt_.slow) { opt_.slow(index, took); return; }
+            const std::string_view leaf = detail::msgname::name(msg);
+            if (opt_.slow) { opt_.slow(leaf, index, took); return; }
             const auto now = std::chrono::steady_clock::now();
             if (slow_said_.size() <= index) slow_said_.resize(index + 1);
             if (now - slow_said_[index] < std::chrono::seconds(1)) return;
             slow_said_[index] = now;
-            const std::string_view leaf = detail::msgname::name(msg);
             std::fprintf(stderr, "jaal: slow update: %.*s (message #%zu) took %.1f ms (budget %.1f ms)\n",
                          static_cast<int>(leaf.size()), leaf.data(), index,
                          std::chrono::duration<double, std::milli>(took).count(),
