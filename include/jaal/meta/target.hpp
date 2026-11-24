@@ -107,6 +107,13 @@
 /// GNU extensions (__PRETTY_FUNCTION__, __is_same): GCC and every clang,
 /// clang-cl included.
 #define JAAL_CC_GNU_EXT (JAAL_CC_CLANG || JAAL_CC_GCC)
+/// A native 128-bit integer (__int128): GCC and clang on 64-bit targets,
+/// never MSVC. Code that wants one tests this and keeps an exact fallback.
+#if defined(__SIZEOF_INT128__)
+#  define JAAL_CC_INT128 1
+#else
+#  define JAAL_CC_INT128 0
+#endif
 
 // ── the CPU and its vector unit ─────────────────────────────────────────────────────────────
 #if defined(__aarch64__) || defined(_M_ARM64)
