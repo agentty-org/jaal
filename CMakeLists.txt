@@ -73,6 +73,7 @@ jaal_target_is(JAAL_OS_APPLE         JAAL_OS_APPLE)
 if(JAAL_PLATFORM_WINDOWS)
     list(APPEND JAAL_PLATFORM_SOURCES
          src/platform/windows/wait_reactor.cpp
+         src/platform/windows/display_clock.cpp
          src/platform/windows/console_signals.cpp
          src/platform/windows/file_lock.cpp
          src/platform/windows/handle.cpp
@@ -80,6 +81,7 @@ if(JAAL_PLATFORM_WINDOWS)
 elseif(JAAL_PLATFORM_POSIX)
     list(APPEND JAAL_PLATFORM_SOURCES
          src/platform/posix/poll_reactor.cpp
+         src/platform/posix/display_clock.cpp
          src/platform/posix/signals.cpp
          src/platform/posix/handle.cpp
          src/platform/posix/process.cpp

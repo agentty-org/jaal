@@ -14,6 +14,7 @@
 //                    the race jaal::guarded cannot reach: two COPIES of the
 //                    program doing read-modify-write on one file
 //   owned_handle     an OS handle as a linear resource (move-only, one close)
+//   display_clock    the compositor's frame clock as a watchable handle
 //   steady_clock / sim_clock
 //
 // NO OS headers anywhere in this tree: they live only in src/platform/<os>/,
@@ -26,6 +27,7 @@
 
 #include "platform/clock.hpp"
 #include "platform/concepts.hpp"
+#include "platform/display_clock.hpp"
 #include "platform/file_lock.hpp"
 #include "platform/handle.hpp"
 #include "platform/process.hpp"
