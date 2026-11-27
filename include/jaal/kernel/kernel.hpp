@@ -67,9 +67,16 @@ namespace jaal {
 // ── hosts ────────────────────────────────────────────────────────────────
 
 /// H can run effect D (a non-core effect) for message type Msg.
+///
+/// Either shape counts: handle(e), or handle(e, Sink<Msg>) for a host that
+/// performs the effect somewhere other than the loop thread and answers
+/// LATER through the sink (a GUI host keeps blocking I/O off its frame
+/// thread that way). The two-argument form is preferred when both exist.
 template <class H, class D, class Msg>
 concept handles = requires(H& h, payload_t<D, Msg> e) {
     h.handle(std::move(e));
+} || requires(H& h, payload_t<D, Msg> e, Sink<Msg> s) {
+    h.handle(std::move(e), std::move(s));
 };
 
 namespace detail::host {
@@ -981,7 +988,23 @@ private:
         // how an effect that must run on the loop thread and produce a
         // result (a terminal handing the tty to a child process and
         // reporting how it exited) stays a value, not a callback.
-        if constexpr (requires { host.handle(std::forward<X>(x)); }) {
+        //
+        // ...or answer LATER: handle(x, sink) is given a Sink into this
+        // kernel, for a host that performs the effect off the loop thread
+        // and sends the answer when it has one (folded on a later step).
+        // It may still answer at once by returning one.
+        if constexpr (requires { host.handle(std::forward<X>(x), inbox_.sink()); }) {
+            using R = decltype(host.handle(std::forward<X>(x), inbox_.sink()));
+            if constexpr (std::is_void_v<R>) {
+                host.handle(std::forward<X>(x), inbox_.sink());
+            } else {
+                static_assert(std::is_convertible_v<R, std::optional<msg_type>>,
+                              "jaal: a host handle(effect, sink) that returns something must "
+                              "return the program's Msg (or std::optional<Msg>)");
+                std::optional<msg_type> answer = host.handle(std::forward<X>(x), inbox_.sink());
+                if (answer) pending_.push_back({0, std::move(*answer)});
+            }
+        } else if constexpr (requires { host.handle(std::forward<X>(x)); }) {
             using R = decltype(host.handle(std::forward<X>(x)));
             if constexpr (std::is_void_v<R>) {
                 host.handle(std::forward<X>(x));

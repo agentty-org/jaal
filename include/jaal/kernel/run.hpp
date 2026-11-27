@@ -152,6 +152,8 @@ struct forward_host {
     using event_type = KE;
     template <class E> requires requires(H& x, E e) { x.handle(std::move(e)); }
     decltype(auto) handle(E e) { return h.handle(std::move(e)); }   // keeps an answer
+    template <class E, class Msg> requires requires(H& x, E e, Sink<Msg> s) { x.handle(std::move(e), std::move(s)); }
+    decltype(auto) handle(E e, Sink<Msg> s) { return h.handle(std::move(e), std::move(s)); }   // answers later
     template <class Pay, class Key, class Msg>
         requires requires(H& x, const Pay& p, const Key& k, Sink<Msg> s) { x.start_source(p, k, s); }
     void start_source(const Pay& p, const Key& k, Sink<Msg> s) { h.start_source(p, k, std::move(s)); }
