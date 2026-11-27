@@ -280,10 +280,47 @@ static_assert(!jaal::HostFor<NoBeepHost, QuitApp>);             // QuitApp retur
 static_assert(jaal::HostFor<NoBeepHost, Echo>);                // Echo only uses core
 static_assert(jaal::HostFor<jaal::recorder, QuitApp>);
 
+// ── a host effect answered LATER, through a Sink ────────────────────────
+// A GUI host performs I/O off its frame thread: handle(effect, sink) gets a
+// Sink into the kernel and answers when the work is done, on a later step.
+struct Ask { int n; };
+using ask_fx = jaal::pure_fx<Ask, "ask">;
+struct Later {
+    struct Model { std::vector<int> got; };
+    struct Go { int n; }; struct Answer { int v; };
+    using Msg = std::variant<Go, Answer>;
+    using Cmd = jaal::Cmd<Msg, ask_fx>;
+    static Cmd update(Model&, Go g) { return Cmd(Ask{g.n}); }
+    static Cmd update(Model& m, Answer a) { m.got.push_back(a.v); return {}; }
+};
+struct LaterHost {
+    std::vector<std::pair<int, Sink<Later::Msg>>> owed;   // answered when the test says
+    void handle(Ask a, Sink<Later::Msg> s) { owed.emplace_back(a.n, std::move(s)); }
+};
+static_assert(jaal::HostFor<LaterHost, Later>);           // the sink form counts as handling it
+
+static int answered_later() {
+    LaterHost host;
+    auto k = jaal::kernel::kernel<Later, jaal::kernel::no_events, jaal::platform::sim_clock>::start(host);
+    k.dispatch(Later::Go{3});
+    k.dispatch(Later::Go{4});
+    (void)k.step(host);
+    if (host.owed.size() != 2) return 1001;                  // both handed to the host
+    if (!k.model().got.empty()) return 1002;                  // nothing answered in the step
+    // answered from another thread, out of order: each lands when it is sent
+    std::thread([&] { (void)host.owed[1].second.send(Later::Answer{16}); }).join();
+    (void)k.step(host);
+    if (k.model().got != std::vector<int>{16}) return 1003;
+    (void)host.owed[0].second.send(Later::Answer{9});
+    (void)k.step(host);
+    if (k.model().got != std::vector<int>{16, 9}) return 1004;
+    return 0;
+}
+
 int main() {
     // Exit codes wrap at 256, so report the code as text.
     int (*const checks[])() = {rule1, rule2, rule3, rule4, rule5, rule6, rule7, budget,
-                               variant_events};
+                               variant_events, answered_later};
     for (auto f : checks)
         if (int r = f()) {
             std::fprintf(stderr, "kernel_test: check %d failed\n", r);
